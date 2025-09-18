@@ -68,7 +68,7 @@
             <h2>Informasi Sesi</h2>
             <form id="session-info-form">
                 <div class="form-group"><label for="matkul">Mata Pelajaran yang Diampu</label><input type="text" id="matkul" required></div>
-                <button type="submit" class="btn">Selesaikan Kelas</button>
+                <button type="submit" class="btn">Simpan & Buat Laporan</button>
             </form>
         </div>
 
@@ -92,6 +92,9 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+    // --- PENTING: GANTI DENGAN URL SCRIPT PRESENSI ANDA ---
+    const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyWoFzAJK63TMhYXTYjd6gATf_P_Xqic6a4x2loNvhDYaBVcJ0x2xjw5C6cu44t0a1nqA/exec';
+    
     // --- DATABASE NAMA SISWA ---
     const dataSiswa = {
         "Kelas A": ["Aghniya Hawa Laila Tsaliyanti", "Ambarwati Friska Panigoro", "Anita Khoirun Nufus", "Aqilah Khairunnisa", "Bunga Permatasari Anjayani", "Fatimah Zahara Siregar", "Ika amalia", "Jelo Octariana Sari", "LINDA WARDANI", "List", "M. Arjun Naja", "Mianis Nur Rahayu", "Nadia Fatimah Azzahra", "Nur ayatul husna", "Rabby Radhiya", "Raysah Rahmania"],
@@ -117,10 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         sessionData.pengajar = document.getElementById('nama-pengajar').value;
         showLoading('Menyiapkan sesi...');
-        setTimeout(() => {
-            hideLoading();
-            showView('class-selection-view');
-        }, 500);
+        setTimeout(() => { hideLoading(); showView('class-selection-view'); }, 500);
     };
 
     // 2. Pilih Kelas
@@ -132,54 +132,66 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    function renderAttendanceList(className) { /* ... (fungsi ini tidak berubah) ... */ }
+    document.getElementById('student-list').onclick = (e) => { /* ... (fungsi ini tidak berubah) ... */ };
+    document.getElementById('next-btn').onclick = () => showView('session-info-view');
+
+    // 3. Mengisi Info Sesi & MENYIMPAN DATA (PERUBAHAN UTAMA)
+    document.getElementById('session-info-form').onsubmit = (e) => {
+        e.preventDefault();
+        sessionData.matkul = document.getElementById('matkul').value;
+        showLoading('Menyimpan data presensi...');
+        
+        // Kirim data ke Google Apps Script
+        fetch(WEB_APP_URL, {
+            method: 'POST',
+            body: JSON.stringify(sessionData) // Kirim semua data sesi
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'success') {
+                // Jika berhasil disimpan, baru tampilkan laporan
+                renderReportView();
+                showView('report-view');
+            } else {
+                alert("Gagal menyimpan data ke Google Sheet. " + data.message);
+            }
+        })
+        .catch(err => {
+            console.error("Error:", err);
+            alert("Terjadi kesalahan jaringan. Gagal menyimpan data.");
+        })
+        .finally(() => {
+            hideLoading();
+        });
+    };
+    
+    // 4. Menampilkan Laporan & Unduh PDF (tidak berubah)
+    function renderReportView() { /* ... (fungsi ini tidak berubah) ... */ }
+    document.getElementById('get-pdf-btn').onclick = () => { /* ... (fungsi ini tidak berubah) ... */ };
+
+    // --- Implementasi fungsi-fungsi yang tidak berubah ---
     function renderAttendanceList(className) {
         document.getElementById('attendance-header').textContent = `Presensi ${className}`;
         const listContainer = document.getElementById('student-list');
         listContainer.innerHTML = '';
         dataSiswa[className].sort().forEach(nama => {
-            sessionData.presensi[nama] = null; // Set default
+            sessionData.presensi[nama] = null;
             const listItem = document.createElement('li');
             listItem.className = 'student-item';
-            listItem.innerHTML = `
-                <span>${nama}</span>
-                <div class="status-circles" data-nama="${nama}">
-                    <div class="status-circle hadir" data-status="Hadir" title="Hadir"></div>
-                    <div class="status-circle absen" data-status="Absen" title="Absen"></div>
-                    <div class="status-circle izin" data-status="Izin" title="Izin"></div>
-                </div>`;
+            listItem.innerHTML = `<span>${nama}</span><div class="status-circles" data-nama="${nama}"><div class="status-circle hadir" data-status="Hadir" title="Hadir"></div><div class="status-circle absen" data-status="Absen" title="Absen"></div><div class="status-circle izin" data-status="Izin" title="Izin"></div></div>`;
             listContainer.appendChild(listItem);
         });
     }
-
-    // 3. Menandai Presensi
     document.getElementById('student-list').onclick = (e) => {
         if (e.target.matches('.status-circle')) {
             const status = e.target.dataset.status;
             const nama = e.target.parentElement.dataset.nama;
             sessionData.presensi[nama] = status;
-            
-            // Update tampilan visual
             e.target.parentElement.querySelectorAll('.status-circle').forEach(c => c.classList.remove('active'));
             e.target.classList.add('active');
         }
     };
-
-    // 4. Lanjut ke Info Sesi
-    document.getElementById('next-btn').onclick = () => showView('session-info-view');
-
-    // 5. Mengisi Info Sesi
-    document.getElementById('session-info-form').onsubmit = (e) => {
-        e.preventDefault();
-        sessionData.matkul = document.getElementById('matkul').value;
-        showLoading('Menyusun laporan...');
-        setTimeout(() => {
-            renderReportView();
-            hideLoading();
-            showView('report-view');
-        }, 500);
-    };
-    
-    // 6. Menampilkan Laporan
     function renderReportView() {
         document.getElementById('report-header').textContent = `Laporan Presensi - ${sessionData.matkul}`;
         document.getElementById('report-subheader').textContent = `Kelas ${sessionData.kelas} | Pengajar: ${sessionData.pengajar}`;
@@ -190,23 +202,13 @@ document.addEventListener('DOMContentLoaded', () => {
             row.innerHTML = `<td>${index + 1}</td><td>${nama}</td><td>${status || 'Tidak Diabsen'}</td>`;
         });
     }
-
-    // 7. Unduh PDF dan Reset
     document.getElementById('get-pdf-btn').onclick = () => {
         showLoading('Membuat file PDF...');
         const element = document.getElementById('report-content');
-        const opt = {
-            margin: 0.5,
-            filename: `Presensi_${sessionData.kelas}_${sessionData.matkul}.pdf`,
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas:  { scale: 2 },
-            jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' }
-        };
-
+        const opt = { margin: 0.5, filename: `Presensi_${sessionData.kelas}_${sessionData.matkul}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas:  { scale: 2 }, jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' } };
         html2pdf().from(element).set(opt).save().then(() => {
             hideLoading();
             alert("PDF berhasil dibuat!");
-            // Reset aplikasi ke awal
             location.reload();
         });
     };
