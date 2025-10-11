@@ -3,216 +3,1238 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Presensi Digital - Cendekia Aksara</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <title>Presensi Interaktif - Cendekia Aksara</title>
+    
+    <!-- PDF Generation Libraries (jsPDF & autoTable) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+    
+    <!-- Firebase SDK (v11 Modular) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, deleteDoc, writeBatch, query, where, serverTimestamp, updateDoc, increment, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        
+        // --- Firebase Configuration ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyDpUWUIzPXIZN6rrNtsIqcL6VfOE2RLVl0",
+            authDomain: "mading-cf676.firebaseapp.com",
+            projectId: "mading-cf676",
+            storageBucket: "mading-cf676.appspot.com",
+            messagingSenderId: "72175203671",
+            appId: "1:72175203671:web:7a0676a55beb64bc96ba12"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // --- Global State ---
+        let currentUser = null;
+        let currentViewId = 'login-view';
+        let sessionData = {};
+        const dataSiswa = { "Kelas A": [], "Kelas B": [] };
+
+        // --- DOM Elements ---
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+        const helpBubble = document.getElementById('help-bubble');
+
+        // --- Utility Functions ---
+        const showLoading = (message = "Memuat...") => { loadingText.textContent = message; loadingOverlay.classList.remove('hidden'); };
+        const hideLoading = () => loadingOverlay.classList.add('hidden');
+        const showView = (viewId) => {
+            currentViewId = viewId;
+            document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+            const targetView = document.getElementById(viewId);
+            if (targetView) {
+                targetView.classList.remove('hidden');
+                targetView.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+            helpBubble.classList.toggle('hidden', viewId === 'login-view');
+        };
+
+        // --- Modal Logic ---
+        function showModal(title, text, isConfirm = false) {
+            const modal = document.getElementById('custom-modal');
+            modal.querySelector('#modal-title').textContent = title;
+            modal.querySelector('#modal-body-content').innerHTML = text;
+            const confirmBtn = modal.querySelector('#modal-confirm-btn');
+            const cancelBtn = modal.querySelector('#modal-cancel-btn');
+
+            cancelBtn.style.display = isConfirm ? 'inline-block' : 'none';
+            confirmBtn.textContent = isConfirm ? 'Ya, Lanjutkan' : 'Tutup';
+            modal.classList.remove('hidden');
+
+            return new Promise(resolve => {
+                confirmBtn.onclick = () => { modal.classList.add('hidden'); resolve(true); };
+                cancelBtn.onclick = () => { modal.classList.add('hidden'); resolve(false); };
+            });
+        }
+        
+        // --- Authentication Logic ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                showLoading("Mendapatkan data pengguna...");
+                try {
+                    const docRef = doc(db, "users", user.uid);
+                    const docSnap = await getDoc(docRef);
+
+                    if (docSnap.exists()) {
+                        currentUser = { uid: user.uid, email: user.email, ...docSnap.data() };
+                        if (user.email.toLowerCase() === 'admin@ac.id') {
+                            currentUser.role = 'admin';
+                            renderAdminDashboard();
+                        } else {
+                            currentUser.role = 'pengajar';
+                            renderTeacherForm();
+                        }
+                    } else {
+                        // User exists in Auth but not in Firestore, sign out
+                        await signOut(auth);
+                        showModal("Error", "Data pengguna tidak ditemukan di database.");
+                    }
+                } catch (error) {
+                    console.error("Error fetching user data:", error);
+                    showModal("Error", "Gagal mengambil data pengguna. Silakan coba lagi.");
+                    await signOut(auth);
+                }
+            } else {
+                currentUser = null;
+                showView('login-view');
+                hideLoading();
+            }
+        });
+
+        document.getElementById('login-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            
+            // Hardcoded admin check
+            if (email.toLowerCase() === 'admin@ac.id' && password === 'admin1') {
+                showLoading("Autentikasi Admin...");
+                signInWithEmailAndPassword(auth, email, password)
+                    .catch((error) => {
+                        console.warn("Admin login error, might need to create admin user in Firebase Auth Console:", error.message);
+                        showModal("Login Gagal", "Gagal masuk sebagai admin. Hubungi pengembang.");
+                        hideLoading();
+                    });
+            } else if (email.toLowerCase().endsWith('@ac.id')) {
+                showLoading("Autentikasi Pengajar...");
+                 signInWithEmailAndPassword(auth, email, password)
+                    .catch(error => {
+                        console.error("Teacher login error:", error);
+                        showModal("Login Gagal", "Email atau password pengajar salah.");
+                        hideLoading();
+                    });
+            } else {
+                 showModal("Login Gagal", "Format email tidak valid. Gunakan email @ac.id.");
+            }
+        });
+
+        document.getElementById('logout-btn').addEventListener('click', () => signOut(auth));
+        document.getElementById('admin-logout-btn').addEventListener('click', () => signOut(auth));
+        document.getElementById('back-to-admin-dashboard-btn').addEventListener('click', renderAdminDashboard);
+        document.getElementById('back-to-admin-dashboard-btn-2').addEventListener('click', renderAdminDashboard);
+
+
+        // --- TEACHER WORKFLOW ---
+
+        function renderTeacherForm() {
+            document.getElementById('teacher-form-pengajar').value = currentUser.name;
+            showView('teacher-form-view');
+            hideLoading();
+        }
+        
+        document.getElementById('view-profile-btn').addEventListener('click', renderTeacherProfile);
+
+        document.getElementById('teacher-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const kelas = e.submitter.dataset.kelas;
+            if (!kelas) return;
+
+            sessionData = {
+                pengajarUid: currentUser.uid,
+                pengajar: document.getElementById('teacher-form-pengajar').value,
+                matkul: document.getElementById('teacher-form-matkul').value,
+                kelas: kelas,
+                presensi: {},
+                createdAt: serverTimestamp()
+            };
+
+            if (!sessionData.matkul) {
+                showModal("Peringatan", "Nama mata pelajaran wajib diisi.");
+                return;
+            }
+            
+            showLoading(`Memuat daftar siswa ${kelas}...`);
+            try {
+                const studentsCol = collection(db, 'students', kelas, 'roster');
+                const studentSnapshot = await getDocs(studentsCol);
+                dataSiswa[kelas] = studentSnapshot.docs.map(doc => ({id: doc.id, ...doc.data()})).sort((a,b) => a.name.localeCompare(b.name));
+                
+                if (dataSiswa[kelas].length === 0) {
+                    showModal("Info", `Tidak ada data siswa ditemukan untuk ${kelas}. Hubungi admin.`);
+                    hideLoading();
+                    return;
+                }
+                
+                renderAttendanceView(kelas);
+
+            } catch (error) {
+                console.error("Error fetching students: ", error);
+                showModal("Error", "Gagal memuat daftar siswa.");
+                hideLoading();
+            }
+        });
+
+        function renderAttendanceView(kelas) {
+            const container = document.getElementById('student-list-container');
+            container.innerHTML = '';
+            document.getElementById('attendance-header').textContent = `Presensi ${kelas}`;
+
+            dataSiswa[kelas].forEach(siswa => {
+                sessionData.presensi[siswa.id] = { name: siswa.name, status: null };
+                const item = document.createElement('div');
+                item.className = 'student-item';
+                item.innerHTML = `
+                    <span class="student-name">${siswa.name}</span>
+                    <div class="attendance-buttons" data-student-id="${siswa.id}">
+                        <button class="status-btn btn-hadir" data-status="Hadir">Hadir</button>
+                        <button class="status-btn btn-izin" data-status="Izin">Izin</button>
+                        <button class="status-btn btn-absen" data-status="Absen">Absen</button>
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+            
+            updateNextButtonState();
+            showView('attendance-view');
+            hideLoading();
+        }
+        
+        document.getElementById('student-list-container').addEventListener('click', (e) => {
+            const button = e.target.closest('.status-btn');
+            if (button) {
+                const buttonGroup = button.parentElement;
+                const studentId = buttonGroup.dataset.studentId;
+                const newStatus = button.dataset.status;
+
+                sessionData.presensi[studentId].status = newStatus;
+                
+                // Update UI
+                buttonGroup.querySelectorAll('.status-btn').forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+                
+                updateNextButtonState();
+            }
+        });
+        
+        function updateNextButtonState() {
+            const allAttended = Object.values(sessionData.presensi).every(s => s.status !== null);
+            document.getElementById('attendance-next-btn').disabled = !allAttended;
+        }
+
+        document.getElementById('attendance-next-btn').addEventListener('click', () => {
+            showView('session-details-view');
+            document.getElementById('session-start-time').value = '';
+            document.getElementById('session-end-time').value = '';
+            document.getElementById('session-materi').value = '';
+            document.getElementById('duration-display').textContent = 'Durasi mengajar akan tampil di sini.';
+        });
+
+        function calculateDuration() {
+            const start = document.getElementById('session-start-time').value;
+            const end = document.getElementById('session-end-time').value;
+            const display = document.getElementById('duration-display');
+            if (start && end) {
+                const startTime = new Date(`1970-01-01T${start}`);
+                const endTime = new Date(`1970-01-01T${end}`);
+                if (endTime > startTime) {
+                    const diffMs = endTime - startTime;
+                    const diffMins = Math.round(diffMs / 60000);
+                    display.textContent = `Anda sudah mengajar selama ${diffMins} menit.`;
+                    return diffMins;
+                } else {
+                    display.textContent = "Jam selesai harus setelah jam mulai.";
+                    return null;
+                }
+            }
+            return null;
+        }
+        
+        document.getElementById('session-start-time').addEventListener('change', calculateDuration);
+        document.getElementById('session-end-time').addEventListener('change', calculateDuration);
+        
+        document.getElementById('session-details-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const duration = calculateDuration();
+            if (duration === null) {
+                showModal("Peringatan", "Pastikan jam mulai dan selesai sudah benar.");
+                return;
+            }
+
+            sessionData.materi = document.getElementById('session-materi').value;
+            sessionData.jamMulai = document.getElementById('session-start-time').value;
+            sessionData.jamSelesai = document.getElementById('session-end-time').value;
+            sessionData.durasi = duration;
+            
+            showLoading("Menyimpan laporan presensi...");
+            try {
+                // Save attendance record
+                await addDoc(collection(db, "attendanceRecords"), sessionData);
+
+                // Calculate and update points
+                const points = 1000 + (duration - 80);
+                const userRef = doc(db, "users", currentUser.uid);
+                await updateDoc(userRef, {
+                    points: increment(points)
+                });
+                
+                renderReportView();
+            } catch (error) {
+                console.error("Error saving attendance:", error);
+                showModal("Error", "Gagal menyimpan data presensi. Coba lagi.");
+                hideLoading();
+            }
+        });
+        
+        function renderReportView() {
+            document.getElementById('report-header-title').textContent = `Laporan Presensi - ${sessionData.matkul}`;
+            document.getElementById('report-subheader-info').textContent = `Kelas ${sessionData.kelas} | Pengajar: ${sessionData.pengajar}`;
+            
+            const tableBody = document.getElementById('report-table-body');
+            tableBody.innerHTML = '';
+            Object.values(sessionData.presensi).sort((a,b) => a.name.localeCompare(b.name)).forEach((siswa, index) => {
+                const row = tableBody.insertRow();
+                row.innerHTML = `<td>${index + 1}</td><td>${siswa.name}</td><td><span class="tag tag-status-${siswa.status.toLowerCase()}">${siswa.status}</span></td>`;
+            });
+
+            showView('report-view');
+            hideLoading();
+        }
+
+        document.getElementById('download-pdf-btn').addEventListener('click', () => {
+             showLoading('Membuat file PDF...');
+             const { jsPDF } = window.jspdf;
+             const doc = new jsPDF();
+
+             // Set Title and Subtitle
+             doc.setFontSize(18);
+             doc.text(`Laporan Presensi - ${sessionData.matkul}`, 14, 22);
+             doc.setFontSize(12);
+             doc.text(`Kelas: ${sessionData.kelas} | Pengajar: ${sessionData.pengajar}`, 14, 30);
+             doc.text(`Tanggal: ${new Date().toLocaleDateString('id-ID', { dateStyle: 'full' })}`, 14, 36);
+
+             const tableColumn = ["No.", "Nama Siswa", "Status Kehadiran"];
+             const tableRows = [];
+
+             Object.values(sessionData.presensi)
+                 .sort((a,b) => a.name.localeCompare(b.name))
+                 .forEach((siswa, index) => {
+                     const rowData = [
+                         index + 1,
+                         siswa.name,
+                         siswa.status || 'Belum Diabsen'
+                     ];
+                     tableRows.push(rowData);
+                 });
+
+             doc.autoTable({
+                 head: [tableColumn],
+                 body: tableRows,
+                 startY: 45,
+                 theme: 'grid',
+                 headStyles: { fillColor: [0, 51, 102] }, // var(--primary)
+                 styles: { halign: 'center' }, // Default alignment
+                 columnStyles: { 1: { halign: 'left' } } // Nama Siswa left-aligned
+             });
+             
+             const fileName = `Presensi_${sessionData.kelas}_${sessionData.matkul.replace(/\s/g, '_')}.pdf`;
+             doc.save(fileName);
+             
+             hideLoading();
+             showView('thank-you-view');
+             startConfetti();
+        });
+
+        document.getElementById('back-to-dashboard-from-thanks').addEventListener('click', renderTeacherForm);
+        
+        // --- Confetti ---
+        function startConfetti() {
+            const container = document.getElementById('thank-you-view');
+            for (let i = 0; i < 150; i++) {
+                const confetti = document.createElement('div');
+                confetti.className = 'confetti';
+                confetti.style.left = `${Math.random() * 100}vw`;
+                confetti.style.animationDelay = `${Math.random() * 3}s`;
+                confetti.style.backgroundColor = `hsl(${Math.random() * 360}, 100%, 50%)`;
+                container.appendChild(confetti);
+            }
+            setTimeout(() => {
+                container.querySelectorAll('.confetti').forEach(el => el.remove());
+            }, 5000);
+        }
+        
+        // --- Teacher Profile ---
+        async function renderTeacherProfile() {
+            showLoading("Memuat profil...");
+            try {
+                // Re-fetch user data to get latest points
+                const userRef = doc(db, "users", currentUser.uid);
+                const userSnap = await getDoc(userRef);
+                const userData = userSnap.data();
+
+                document.getElementById('profile-name').textContent = userData.name;
+                document.getElementById('profile-points').textContent = (userData.points || 0).toLocaleString('id-ID');
+                
+                // Fetch teaching archive
+                const recordsRef = collection(db, "attendanceRecords");
+                const q = query(recordsRef, where("pengajarUid", "==", currentUser.uid));
+                const recordsSnapshot = await getDocs(q);
+                
+                const records = recordsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                records.sort((a, b) => b.createdAt.toDate() - a.createdAt.toDate());
+
+                const archiveContainer = document.getElementById('teacher-archive-list');
+                archiveContainer.innerHTML = '';
+
+                if (records.length === 0) {
+                    archiveContainer.innerHTML = '<p class="placeholder-text">Anda belum memiliki riwayat mengajar.</p>';
+                } else {
+                    records.forEach(record => {
+                        const recordDate = record.createdAt.toDate();
+                        const archiveItem = document.createElement('div');
+                        archiveItem.className = 'archive-item';
+                        archiveItem.innerHTML = `
+                            <div class="archive-header">
+                                <strong>${record.matkul} - ${record.kelas}</strong>
+                                <span>${recordDate.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}</span>
+                            </div>
+                        `;
+                        archiveItem.addEventListener('click', () => {
+                             renderArchiveDetailView(record);
+                        });
+                        archiveContainer.appendChild(archiveItem);
+                    });
+                }
+                
+                showView('teacher-profile-view');
+            } catch (error) {
+                console.error("Error loading profile:", error);
+                showModal("Error", "Gagal memuat profil Anda.");
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function renderArchiveDetailView(record) {
+            document.getElementById('archive-detail-header').textContent = `Detail: ${record.matkul}`;
+            document.getElementById('archive-detail-subheader').textContent = `Kelas ${record.kelas} - ${record.createdAt.toDate().toLocaleDateString('id-ID', { dateStyle: 'full' })}`;
+            
+            const listContainer = document.getElementById('archive-detail-list');
+            listContainer.innerHTML = '';
+
+            Object.values(record.presensi)
+                .sort((a,b) => a.name.localeCompare(b.name))
+                .forEach(s => {
+                    const listItem = document.createElement('li');
+                    listItem.innerHTML = `
+                        <span>${s.name}</span>
+                        <span class="tag tag-status-${s.status.toLowerCase()}">${s.status}</span>
+                    `;
+                    listContainer.appendChild(listItem);
+                });
+            
+            showView('teacher-archive-detail-view');
+        }
+
+        document.getElementById('back-to-dashboard-from-profile').addEventListener('click', renderTeacherForm);
+        document.getElementById('back-to-profile-from-detail').addEventListener('click', renderTeacherProfile);
+        
+        // --- ADMIN WORKFLOW ---
+
+        async function renderAdminDashboard() {
+            showLoading("Memuat dasbor admin...");
+            document.getElementById('admin-welcome-name').textContent = currentUser.name;
+            
+            try {
+                // Fetch attendance records for today
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const recordsRef = collection(db, "attendanceRecords");
+                const q = query(recordsRef, where("createdAt", ">=", today));
+                const recordsSnapshot = await getDocs(q);
+
+                let totalHadir = 0, totalIzin = 0, totalAbsen = 0;
+                const filledClasses = new Set();
+                
+                recordsSnapshot.forEach(doc => {
+                    const record = doc.data();
+                    filledClasses.add(`${record.pengajar} - ${record.kelas}`);
+                    Object.values(record.presensi).forEach(s => {
+                        if (s.status === 'Hadir') totalHadir++;
+                        if (s.status === 'Izin') totalIzin++;
+                        if (s.status === 'Absen') totalAbsen++;
+                    });
+                });
+                
+                document.getElementById('stats-hadir').textContent = totalHadir;
+                document.getElementById('stats-izin').textContent = totalIzin;
+                document.getElementById('stats-absen').textContent = totalAbsen;
+
+                // Fetch all teachers
+                const usersRef = collection(db, "users");
+                const teachersQuery = query(usersRef, where("role", "==", "pengajar"));
+                const teachersSnapshot = await getDocs(teachersQuery);
+                const allTeachers = teachersSnapshot.docs.map(doc => doc.data().name);
+
+                const statusList = document.getElementById('teacher-status-list');
+                statusList.innerHTML = '';
+                allTeachers.forEach(teacherName => {
+                    const hasFilledA = filledClasses.has(`${teacherName} - Kelas A`);
+                    const hasFilledB = filledClasses.has(`${teacherName} - Kelas B`);
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <span>${teacherName}</span>
+                        <div>
+                           <span class="tag ${hasFilledA ? 'tag-status-hadir' : 'tag-status-absen'}">Kelas A</span>
+                           <span class="tag ${hasFilledB ? 'tag-status-hadir' : 'tag-status-absen'}">Kelas B</span>
+                        </div>
+                    `;
+                    statusList.appendChild(li);
+                });
+
+            } catch (error) {
+                console.error("Error loading admin dashboard: ", error);
+                showModal("Error", "Gagal memuat data dasbor admin.");
+            }
+
+            showView('admin-dashboard-view');
+            hideLoading();
+        }
+
+        document.getElementById('manage-students-btn').addEventListener('click', () => {
+            showView('admin-student-management-view');
+            document.getElementById('student-table-container').innerHTML = '<p class="placeholder-text">Pilih kelas untuk melihat atau mengelola daftar siswa.</p>';
+            document.getElementById('add-student-forms').classList.add('hidden');
+        });
+
+        document.getElementById('manage-records-btn').addEventListener('click', renderAdminRecordsView);
+        
+        document.getElementById('view-class-a-btn').addEventListener('click', () => renderStudentTable('Kelas A'));
+        document.getElementById('view-class-b-btn').addEventListener('click', () => renderStudentTable('Kelas B'));
+
+        async function renderStudentTable(kelas) {
+            showLoading(`Memuat siswa ${kelas}...`);
+            const container = document.getElementById('student-table-container');
+            document.getElementById('add-student-forms').classList.remove('hidden');
+            document.getElementById('current-class-header').textContent = `Daftar Siswa: ${kelas}`;
+            document.getElementById('current-class-header').dataset.currentClass = kelas;
+            
+            container.innerHTML = `
+                <table class="student-table">
+                    <thead><tr><th>Nama Siswa</th><th>Aksi</th></tr></thead>
+                    <tbody id="student-table-body"><tr><td colspan="2">Memuat...</td></tr></tbody>
+                </table>`;
+            const tableBody = document.getElementById('student-table-body');
+            
+            try {
+                const studentsCol = collection(db, 'students', kelas, 'roster');
+                const studentSnapshot = await getDocs(studentsCol);
+                const students = studentSnapshot.docs.map(doc => ({id: doc.id, ...doc.data()})).sort((a,b) => a.name.localeCompare(b.name));
+                
+                tableBody.innerHTML = '';
+                if(students.length === 0){
+                   tableBody.innerHTML = `<tr><td colspan="2">Belum ada siswa di kelas ini.</td></tr>`;
+                } else {
+                   students.forEach(siswa => {
+                       const row = tableBody.insertRow();
+                       row.innerHTML = `
+                           <td><span id="name-${siswa.id}">${siswa.name}</span><input type="text" id="edit-${siswa.id}" class="edit-input hidden" value="${siswa.name}"></td>
+                           <td class="action-buttons">
+                                <button class="btn btn-sm btn-secondary edit-student-btn" data-id="${siswa.id}"><i class="fas fa-edit"></i> Edit</button>
+                                <button class="btn btn-sm btn-success save-student-btn hidden" data-id="${siswa.id}"><i class="fas fa-save"></i> Simpan</button>
+                                <button class="btn btn-sm btn-danger delete-student-btn" data-id="${siswa.id}"><i class="fas fa-trash"></i> Hapus</button>
+                           </td>`;
+                   });
+                }
+            } catch (error) {
+                console.error("Error rendering student table:", error);
+                container.innerHTML = '<p class="placeholder-text error-text">Gagal memuat data siswa.</p>';
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        // --- Admin Student Management Event Listeners ---
+        document.getElementById('student-table-container').addEventListener('click', async (e) => {
+            const currentClass = document.getElementById('current-class-header').dataset.currentClass;
+            
+            if (e.target.closest('.edit-student-btn')) {
+                const btn = e.target.closest('.edit-student-btn');
+                const studentId = btn.dataset.id;
+                btn.classList.add('hidden');
+                btn.nextElementSibling.classList.remove('hidden'); // Show save button
+                document.getElementById(`name-${studentId}`).classList.add('hidden');
+                document.getElementById(`edit-${studentId}`).classList.remove('hidden');
+            }
+            
+            if (e.target.closest('.save-student-btn')) {
+                const btn = e.target.closest('.save-student-btn');
+                const studentId = btn.dataset.id;
+                const newName = document.getElementById(`edit-${studentId}`).value.trim();
+
+                if (!newName) {
+                    showModal("Peringatan", "Nama siswa tidak boleh kosong.");
+                    return;
+                }
+                
+                showLoading("Menyimpan perubahan...");
+                try {
+                    const studentRef = doc(db, 'students', currentClass, 'roster', studentId);
+                    await updateDoc(studentRef, { name: newName });
+                    renderStudentTable(currentClass); // Re-render table
+                } catch(error) {
+                    console.error("Error updating student:", error);
+                    showModal("Error", "Gagal memperbarui nama siswa.");
+                } finally {
+                    hideLoading();
+                }
+            }
+
+            if (e.target.closest('.delete-student-btn')) {
+                 const btn = e.target.closest('.delete-student-btn');
+                 const studentId = btn.dataset.id;
+                 if (await showModal("Konfirmasi", "Anda yakin ingin menghapus siswa ini?", true)) {
+                     showLoading("Menghapus siswa...");
+                     try {
+                         await deleteDoc(doc(db, 'students', currentClass, 'roster', studentId));
+                         renderStudentTable(currentClass);
+                     } catch(error) {
+                         console.error("Error deleting student:", error);
+                         showModal("Error", "Gagal menghapus siswa.");
+                     } finally {
+                         hideLoading();
+                     }
+                 }
+            }
+        });
+        
+        document.getElementById('add-single-student-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const currentClass = document.getElementById('current-class-header').dataset.currentClass;
+            const nameInput = document.getElementById('new-student-name');
+            const newName = nameInput.value.trim();
+
+            if (!newName) {
+                showModal("Peringatan", "Nama siswa tidak boleh kosong.");
+                return;
+            }
+
+            showLoading("Menambahkan siswa...");
+            try {
+                await addDoc(collection(db, 'students', currentClass, 'roster'), { name: newName });
+                nameInput.value = '';
+                renderStudentTable(currentClass);
+            } catch (error) {
+                console.error("Error adding student:", error);
+                showModal("Error", "Gagal menambahkan siswa.");
+            } finally {
+                hideLoading();
+            }
+        });
+        
+        document.getElementById('add-bulk-student-form').addEventListener('submit', async (e) => {
+             e.preventDefault();
+             const currentClass = document.getElementById('current-class-header').dataset.currentClass;
+             const listTextarea = document.getElementById('bulk-student-list');
+             const names = listTextarea.value.trim().split('\n').map(name => name.trim()).filter(name => name);
+             
+             if (names.length === 0) {
+                 showModal("Peringatan", "Daftar nama tidak boleh kosong.");
+                 return;
+             }
+
+             if (await showModal("Konfirmasi", `Anda akan menambahkan ${names.length} siswa baru. Lanjutkan?`, true)) {
+                 showLoading("Menambahkan siswa secara massal...");
+                 try {
+                     const batch = writeBatch(db);
+                     const rosterCol = collection(db, 'students', currentClass, 'roster');
+                     names.forEach(name => {
+                         const newStudentRef = doc(rosterCol);
+                         batch.set(newStudentRef, { name: name });
+                     });
+                     await batch.commit();
+                     listTextarea.value = '';
+                     renderStudentTable(currentClass);
+                 } catch (error) {
+                     console.error("Error adding bulk students:", error);
+                     showModal("Error", "Gagal menambahkan siswa secara massal.");
+                 } finally {
+                     hideLoading();
+                 }
+             }
+        });
+
+        async function renderAdminRecordsView() {
+            showView('admin-records-view');
+            showLoading("Memuat riwayat presensi...");
+            const container = document.getElementById('admin-records-list');
+            container.innerHTML = '';
+            try {
+                const recordsRef = collection(db, "attendanceRecords");
+                const q = query(recordsRef, orderBy("createdAt", "desc"));
+                const recordsSnapshot = await getDocs(q);
+
+                if (recordsSnapshot.empty) {
+                    container.innerHTML = '<p class="placeholder-text">Belum ada riwayat presensi yang tersimpan.</p>';
+                } else {
+                    recordsSnapshot.forEach(recordDoc => {
+                        const record = { id: recordDoc.id, ...recordDoc.data() };
+                        const recordDate = record.createdAt.toDate();
+                        const recordItem = document.createElement('div');
+                        recordItem.className = 'record-item';
+                        recordItem.innerHTML = `
+                           <div class="record-info">
+                               <p><strong>${record.matkul}</strong> - ${record.kelas}</p>
+                               <p class="record-meta">Oleh ${record.pengajar} pada ${recordDate.toLocaleString('id-ID')}</p>
+                           </div>
+                           <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}" data-uid="${record.pengajarUid}" data-points="${1000 + (record.durasi - 80)}"><i class="fas fa-trash"></i> Hapus</button>
+                        `;
+                        container.appendChild(recordItem);
+                    });
+                }
+
+            } catch(error) {
+                console.error("Error loading records:", error);
+                container.innerHTML = '<p class="placeholder-text error-text">Gagal memuat riwayat.</p>';
+            } finally {
+                hideLoading();
+            }
+        }
+        
+        document.getElementById('admin-records-list').addEventListener('click', async (e) => {
+            const deleteBtn = e.target.closest('.delete-record-btn');
+            if (deleteBtn) {
+                const recordId = deleteBtn.dataset.id;
+                const teacherUid = deleteBtn.dataset.uid;
+                const pointsToSubtract = parseInt(deleteBtn.dataset.points, 10);
+
+                if (!teacherUid || teacherUid === 'undefined') {
+                    showModal("Error", "Tidak dapat menghapus catatan ini karena ID pengajar tidak ditemukan. Catatan ini mungkin dibuat dengan versi aplikasi yang lebih lama.");
+                    return;
+                }
+
+                if (await showModal("Konfirmasi Hapus", "Anda yakin ingin menghapus catatan presensi ini? Tindakan ini akan mengurangi poin pengajar dan tidak dapat diurungkan.", true)) {
+                    showLoading("Menghapus catatan...");
+                    try {
+                        // 1. Delete the attendance record
+                        await deleteDoc(doc(db, "attendanceRecords", recordId));
+
+                        // 2. Subtract points from the teacher
+                        const userRef = doc(db, "users", teacherUid);
+                        await updateDoc(userRef, {
+                            points: increment(-pointsToSubtract)
+                        });
+                        
+                        showModal("Sukses", "Catatan presensi telah dihapus dan poin pengajar telah dikembalikan.").then(() => {
+                           renderAdminRecordsView(); // Refresh the list
+                           renderAdminDashboard(); // Update stats on main dashboard
+                        });
+
+                    } catch(error) {
+                         console.error("Error deleting record:", error);
+                         showModal("Error", "Gagal menghapus catatan.");
+                    } finally {
+                        hideLoading();
+                    }
+                }
+            }
+        });
+
+        // --- Help Bubble Logic ---
+        const helpMessages = {
+            'login-view': 'Masukkan email dan password Anda yang terdaftar. Gunakan format email <strong>@ac.id</strong> untuk pengajar, dan email <strong>admin@ac.id</strong> dengan password <strong>admin1</strong> untuk masuk sebagai admin.',
+            'teacher-form-view': 'Selamat datang, Pengajar! Klik tombol "Profil Saya" untuk melihat poin dan riwayat mengajar. Isi formulir di bawah untuk memulai sesi presensi baru.',
+            'attendance-view': 'Ini adalah halaman presensi. Klik tombol di samping nama siswa untuk mengubah status kehadirannya. Tombol "Berikutnya" akan aktif setelah semua siswa diabsen.',
+            'session-details-view': 'Catat materi yang dibahas hari ini. Masukkan juga jam mulai dan selesai mengajar. Durasi akan dihitung otomatis. Klik "Simpan & Buat Laporan" untuk finalisasi.',
+            'report-view': 'Ini adalah rekap presensi yang baru saja Anda buat. Anda dapat mengunduhnya dalam format PDF untuk arsip.',
+            'thank-you-view': 'Terima kasih telah menyelesaikan sesi mengajar hari ini! Anda dapat kembali ke dasbor untuk memulai sesi baru.',
+            'teacher-profile-view': 'Di sini Anda dapat melihat total poin yang telah Anda kumpulkan dan riwayat sesi mengajar yang pernah Anda lakukan. Klik pada riwayat untuk melihat detail presensi.',
+            'admin-dashboard-view': 'Dasbor Admin. Anda bisa melihat statistik kehadiran hari ini, memantau status presensi pengajar, mengelola data siswa, atau menghapus data presensi yang salah (Recovery).',
+            'admin-student-management-view': 'Pilih kelas untuk melihat daftar siswanya. Anda bisa menambah siswa satu per satu atau secara massal dengan menyalin daftar nama. Anda juga bisa mengedit dan menghapus data siswa di sini.',
+            'admin-records-view': 'Halaman Recovery. Di sini Anda dapat melihat semua catatan presensi yang telah dikirim. Jika ada data ganda atau salah, Anda bisa menghapusnya. Menghapus data di sini akan mengembalikan (mengurangi) poin yang didapat pengajar dari sesi tersebut.',
+            'teacher-archive-detail-view': 'Ini adalah rincian presensi untuk sesi yang Anda pilih. Anda dapat melihat status kehadiran setiap siswa pada sesi tersebut. Tekan tombol "Kembali ke Profil" untuk melihat daftar arsip lainnya.'
+        };
+
+        helpBubble.onclick = () => {
+            const message = helpMessages[currentViewId] || 'Tidak ada bantuan untuk halaman ini.';
+            showModal('Bantuan Kontekstual', message);
+        };
+    </script>
+    
+    <!-- Fonts and Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
-        :root { --primary: #003366; --secondary: #005a9c; --accent: #f0f4f8; --hadir: #28a745; --absen: #dc3545; --izin: #ffc107; --border: #dee2e6;}
-        body { font-family: 'Poppins', sans-serif; background-color: var(--accent); margin: 0; padding: 20px; box-sizing: border-box; }
-        .container { max-width: 800px; margin: 20px auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.1); }
-        h1, h2, h3 { color: var(--primary); text-align: center; }
+        /* --- General Styling & Variables --- */
+        :root {
+            --primary: #003366; --secondary: #005a9c; --accent: #f0f4f8; 
+            --hadir: #28a745; --izin: #ffc107; --absen: #dc3545; 
+            --border: #dee2e6; --shadow-color: rgba(0, 51, 102, 0.1);
+            --text-dark: #333; --text-light: #666; --white: #fff;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: var(--accent);
+            margin: 0;
+            color: var(--text-dark);
+            -webkit-font-smoothing: antialiased;
+        }
+        .container {
+            max-width: 960px;
+            margin: 20px auto;
+            background: var(--white);
+            padding: 30px 40px;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px var(--shadow-color);
+            transition: all 0.3s ease-in-out;
+            position: relative;
+            overflow: hidden;
+        }
+        .view { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* --- Headers --- */
+        h1, h2, h3 { color: var(--primary); text-align: center; font-weight: 700; }
+        h1 { font-size: 2.2em; }
+        h2 { font-size: 1.8em; margin-top: 0; margin-bottom: 25px; }
+        h3 { font-size: 1.4em; }
+        p { color: var(--text-light); line-height: 1.6; text-align: center; }
+
+        /* --- Forms & Buttons --- */
+        .form-group { margin-bottom: 20px; text-align: left; }
+        .form-group label { display: block; font-weight: 600; margin-bottom: 8px; font-size: 0.9em; }
+        .form-group input, .form-group textarea {
+            width: 100%; padding: 12px 15px; border: 1px solid var(--border);
+            border-radius: 8px; font-size: 1em; font-family: 'Poppins', sans-serif;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .form-group input:focus, .form-group textarea:focus {
+            outline: none; border-color: var(--secondary);
+            box-shadow: 0 0 0 3px rgba(0, 90, 156, 0.2);
+        }
+        textarea { resize: vertical; }
+        .btn {
+            width: 100%; padding: 14px; border: none; border-radius: 8px; color: var(--white);
+            background-color: var(--secondary); font-weight: 600; cursor: pointer;
+            transition: all 0.2s ease; font-size: 1em;
+        }
+        .btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(0, 90, 156, 0.3); }
+        .btn:disabled { background-color: #9db2c6; cursor: not-allowed; }
+        .btn-secondary { background-color: #6c757d; }
+        .btn-success { background-color: var(--hadir); }
+        .btn-danger { background-color: var(--absen); }
+        .btn-sm { padding: 8px 12px; font-size: 0.9em; display: inline-flex; align-items: center; gap: 5px; width: auto; }
+        
         .hidden { display: none !important; }
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; font-weight: 600; margin-bottom: 8px; }
-        .form-group input { width: 100%; padding: 12px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; font-size: 1em; }
-        .btn { width: 100%; padding: 12px; border: none; border-radius: 8px; color: #fff; background-color: var(--secondary); font-weight: 600; cursor: pointer; transition: background-color 0.2s; font-size: 1em; }
-        .btn:disabled { background-color: #6c757d; cursor: not-allowed; }
-        .class-selection { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .student-list { list-style: none; padding: 0; }
-        .student-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--border); }
+
+        /* --- Specific View Styling --- */
+        #login-view p { max-width: 400px; margin: 15px auto; }
+        .class-selection { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+
+        /* --- NEW ATTENDANCE BUTTONS --- */
+        .student-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 18px 15px; border-bottom: 1px solid var(--accent);
+            transition: background-color 0.2s;
+        }
         .student-item:last-child { border-bottom: none; }
-        .status-circles { display: flex; gap: 10px; }
-        .status-circle { width: 24px; height: 24px; border-radius: 50%; background-color: #ccc; cursor: pointer; border: 2px solid transparent; transition: transform 0.2s; }
-        .status-circle:hover { transform: scale(1.2); }
-        .status-circle.hadir { background-color: var(--hadir); }
-        .status-circle.absen { background-color: var(--absen); }
-        .status-circle.izin { background-color: var(--izin); }
-        .status-circle.active { border-color: var(--primary); transform: scale(1.2); }
-        #report-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        #report-table th, #report-table td { border: 1px solid var(--border); padding: 10px; text-align: left; }
-        #report-table th { background-color: var(--accent); }
-        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(255, 255, 255, 0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 9999; }
-        .spinner { width: 50px; height: 50px; border: 5px solid #f3f3f3; border-top: 5px solid var(--secondary); border-radius: 50%; animation: spin 1s linear infinite; }
+        .student-item:hover { background-color: #f8faff; }
+        .student-name { font-weight: 500; }
+        .attendance-buttons { display: flex; gap: 8px; }
+        .status-btn {
+            border: 2px solid transparent;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .status-btn.btn-hadir { background-color: #eaf6ec; color: #1e4620; border-color: #a3d9b1; }
+        .status-btn.btn-izin { background-color: #fff8e1; color: #6d4c18; border-color: #ffe082; }
+        .status-btn.btn-absen { background-color: #fde8e8; color: #6b1d1d; border-color: #f7baba; }
+
+        .status-btn.active.btn-hadir { background-color: var(--hadir); color: var(--white); border-color: var(--hadir); }
+        .status-btn.active.btn-izin { background-color: var(--izin); color: #333; border-color: var(--izin); }
+        .status-btn.active.btn-absen { background-color: var(--absen); color: var(--white); border-color: var(--absen); }
+        
+        /* --- Session Details & Report --- */
+        #duration-display {
+            background-color: var(--accent); padding: 15px; border-radius: 8px;
+            text-align: center; font-weight: 600; color: var(--secondary);
+        }
+        #report-table {
+            width: 100%; border-collapse: collapse; margin-top: 20px;
+        }
+        #report-table th, #report-table td {
+            border: 1px solid var(--border); padding: 12px; text-align: left;
+        }
+        #report-table th { background-color: var(--accent); font-weight: 600; }
+        .tag {
+            padding: 4px 10px; border-radius: 20px; font-size: 0.8em; font-weight: 600; color: var(--white);
+        }
+        .tag-status-hadir { background-color: var(--hadir); }
+        .tag-status-izin { background-color: var(--izin); color: #333; }
+        .tag-status-absen { background-color: var(--absen); }
+        
+        /* --- ADMIN DASHBOARD --- */
+        .admin-controls-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 30px;}
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card {
+            background-color: var(--accent); padding: 20px; border-radius: 12px; text-align: center;
+        }
+        .stat-card .stat-number { font-size: 2.5em; font-weight: 700; color: var(--secondary); }
+        .stat-card .stat-label { font-size: 1em; font-weight: 500; color: var(--text-light); }
+        #teacher-status-list { list-style: none; padding: 0; }
+        #teacher-status-list li {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 15px; border-bottom: 1px solid var(--accent);
+        }
+        #teacher-status-list li:last-child { border-bottom: none; }
+        #teacher-status-list li > div { display: flex; gap: 10px; }
+
+        /* --- ADMIN STUDENT/RECORDS MANAGEMENT --- */
+        .student-management-controls { display: flex; gap: 15px; margin-bottom: 25px; }
+        .student-table { width: 100%; border-collapse: collapse; }
+        .student-table th, .student-table td { padding: 12px; border: 1px solid var(--border); text-align: left; }
+        .student-table th { background-color: var(--accent); }
+        .action-buttons { text-align: right !important; white-space: nowrap; }
+        .edit-input { padding: 5px; width: 90%; }
+        .placeholder-text { padding: 40px 20px; text-align: center; background-color: #f9fafb; border-radius: 8px; color: #888; }
+        .error-text { color: var(--absen); }
+        .add-student-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 30px;
+            border-top: 2px dashed var(--border); padding-top: 30px;
+        }
+        .record-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--accent); }
+        .record-meta { font-size: 0.9em; color: var(--text-light); }
+
+
+        /* --- TEACHER PROFILE & ARCHIVE DETAIL --- */
+        .profile-header { text-align: center; margin-bottom: 30px; }
+        #profile-points { font-size: 3em; font-weight: 700; color: var(--secondary); }
+        .archive-item { padding: 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 10px; cursor: pointer; transition: all 0.2s ease; }
+        .archive-item:hover { background-color: var(--accent); border-color: var(--secondary); }
+        .archive-header { display: flex; justify-content: space-between; align-items: center; font-weight: 500; }
+        #archive-detail-list { list-style: none; padding: 0; margin-top: 20px; border-top: 1px solid var(--border); }
+        #archive-detail-list li { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--accent); }
+
+
+        /* --- THANK YOU & CONFETTI --- */
+        #thank-you-view { text-align: center; }
+        .confetti { position: absolute; width: 10px; height: 10px; top: -20px; opacity: 0; animation: fall 3s linear infinite; }
+        @keyframes fall {
+            to { transform: translateY(100vh) rotate(360deg); opacity: 1; }
+        }
+
+        /* --- Helper & Loading UI --- */
+        #loading-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(255, 255, 255, 0.9);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            z-index: 9999;
+        }
+        .spinner {
+            width: 50px; height: 50px; border: 5px solid var(--accent);
+            border-top-color: var(--secondary); border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
         #loading-overlay p { margin-top: 15px; font-size: 1.2em; font-weight: 600; color: var(--primary); }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        @media print { body * { visibility: hidden; } #report-view, #report-view * { visibility: visible; } #report-view { position: absolute; left: 0; top: 0; margin: 0; } .btn { display: none; } }
+        
+        #help-bubble {
+            position: fixed; bottom: 25px; right: 25px; width: 55px; height: 55px;
+            border-radius: 50%; background-color: #f7a04a; color: var(--white);
+            display: flex; justify-content: center; align-items: center;
+            font-size: 1.8em; border: none; cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000;
+            transition: transform 0.2s ease;
+        }
+        #help-bubble:hover { transform: scale(1.1); }
+
+        .modal {
+            position: fixed; z-index: 1001; left: 0; top: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.5); display: flex;
+            justify-content: center; align-items: center;
+        }
+        .modal-content {
+            background-color: var(--white); padding: 25px 30px; border-radius: 12px;
+            width: 90%; max-width: 500px; animation: fadeIn 0.3s;
+        }
+        .modal-header { padding-bottom: 10px; border-bottom: 1px solid #eee; }
+        .modal-header h2 { margin: 0; text-align: left; font-size: 1.5em; }
+        .modal-body { margin: 20px 0; max-height: 400px; overflow-y: auto; }
+        .modal-footer { text-align: right; margin-top: 20px; }
+        .modal-footer button { width: auto; margin-left: 10px; }
+        
+        .logout-container { display:flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        #logout-btn, #admin-logout-btn, #view-profile-btn { width: auto; }
+
+        /* --- Responsive Design --- */
+        @media (max-width: 768px) {
+            body { padding: 0; }
+            .container {
+                width: 100%;
+                max-width: 100%;
+                border-radius: 0; 
+                min-height: 100vh; 
+                padding: 30px 20px;
+                box-shadow: none; 
+                margin: 0;
+            }
+            .class-selection, .add-student-grid, .admin-controls-grid { grid-template-columns: 1fr; }
+            .student-item { flex-direction: column; align-items: flex-start; gap: 15px; }
+        }
+
     </style>
 </head>
 <body>
+
+    <!-- Main Application Container -->
     <div id="app-container">
+
+        <!-- ===== 1. LOGIN VIEW ===== -->
         <div id="login-view" class="view container">
-            <h1>Portal Presensi Digital</h1>
-            <p>Silakan masukkan nama lengkap Anda untuk memulai sesi presensi.</p>
+            <h1><i class="fas fa-school" style="color: #007bff;"></i> Portal Presensi</h1>
+            <p>Sistem presensi digital interaktif untuk pengajar dan admin Cendekia Aksara.</p>
             <form id="login-form">
-                <div class="form-group"><label for="nama-pengajar">Nama Lengkap Pengajar</label><input type="text" id="nama-pengajar" required></div>
+                <div class="form-group">
+                    <label for="login-email">Email Akun (.ac.id)</label>
+                    <input type="email" id="login-email" required placeholder="contoh: bayu@ac.id">
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" required placeholder="Password Anda">
+                </div>
                 <button type="submit" class="btn">Masuk</button>
             </form>
         </div>
 
-        <div id="class-selection-view" class="view container hidden">
-            <h2>Pilih Kelas</h2>
-            <p>Pilih kelas yang akan Anda lakukan presensi.</p>
-            <div class="class-selection">
-                <button class="btn" data-kelas="Kelas A">Kelas A</button>
-                <button class="btn" data-kelas="Kelas B">Kelas B</button>
+        <!-- ===== 2. TEACHER FORM VIEW ===== -->
+        <div id="teacher-form-view" class="view container hidden">
+            <div class="logout-container">
+                <button id="view-profile-btn" class="btn btn-sm"><i class="fas fa-user-circle"></i> Profil Saya</button>
+                <button id="logout-btn" class="btn btn-sm btn-danger"><i class="fas fa-sign-out-alt"></i> Keluar</button>
             </div>
-        </div>
-
-        <div id="attendance-view" class="view container hidden">
-            <h2 id="attendance-header">Presensi Kelas A</h2>
-            <ul id="student-list" class="student-list"></ul>
-            <button id="next-btn" class="btn" style="margin-top: 20px;">Berikutnya</button>
-        </div>
-
-        <div id="session-info-view" class="view container hidden">
-            <h2>Informasi Sesi</h2>
-            <form id="session-info-form">
-                <div class="form-group"><label for="matkul">Mata Pelajaran yang Diampu</label><input type="text" id="matkul" required></div>
-                <button type="submit" class="btn">Simpan & Buat Laporan</button>
+            <h2>Formulir Sesi Harian</h2>
+            <p>Silakan isi detail sesi mengajar Anda hari ini dan pilih kelas.</p>
+            <form id="teacher-form">
+                <div class="form-group">
+                    <label for="teacher-form-pengajar">Nama Pengajar</label>
+                    <input type="text" id="teacher-form-pengajar" required readonly style="background:#eee;">
+                </div>
+                <div class="form-group">
+                    <label for="teacher-form-matkul">Mata Pelajaran</label>
+                    <input type="text" id="teacher-form-matkul" required placeholder="cth: Teknik Menulis Cerpen">
+                </div>
+                <div class="class-selection">
+                    <button type="submit" class="btn" data-kelas="Kelas A"><i class="fas fa-users"></i> Mulai Presensi Kelas A</button>
+                    <button type="submit" class="btn" data-kelas="Kelas B"><i class="fas fa-users"></i> Mulai Presensi Kelas B</button>
+                </div>
             </form>
         </div>
+        
+        <!-- ===== 3. ATTENDANCE VIEW ===== -->
+        <div id="attendance-view" class="view container hidden">
+             <h2 id="attendance-header">Presensi Kelas</h2>
+             <p>Pilih status kehadiran untuk setiap siswa dengan menekan tombol yang sesuai.</p>
+             <div id="student-list-container"></div>
+             <button id="attendance-next-btn" class="btn" style="margin-top: 25px;" disabled>Berikutnya <i class="fas fa-arrow-right"></i></button>
+        </div>
 
+        <!-- ===== 4. SESSION DETAILS VIEW ===== -->
+        <div id="session-details-view" class="view container hidden">
+             <h2>Detail Sesi & Materi</h2>
+             <p>Lengkapi informasi sesi mengajar untuk menyelesaikan laporan presensi.</p>
+             <form id="session-details-form">
+                 <div class="form-group">
+                     <label for="session-materi">Materi yang Dibahas</label>
+                     <textarea id="session-materi" rows="4" required placeholder="cth: Pengenalan tokoh dan alur cerita..."></textarea>
+                 </div>
+                 <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <label for="session-start-time">Jam Mulai</label>
+                        <input type="time" id="session-start-time" required>
+                    </div>
+                    <div>
+                        <label for="session-end-time">Jam Selesai</label>
+                        <input type="time" id="session-end-time" required>
+                    </div>
+                 </div>
+                 <div id="duration-display">Durasi mengajar akan tampil di sini.</div>
+                 <button type="submit" class="btn" style="margin-top: 25px;">Simpan & Buat Laporan <i class="fas fa-file-alt"></i></button>
+             </form>
+        </div>
+
+        <!-- ===== 5. REPORT VIEW ===== -->
         <div id="report-view" class="view container hidden">
             <div id="report-content">
-                <h2 id="report-header">Laporan Presensi</h2>
-                <p id="report-subheader"></p>
+                <h2 id="report-header-title">Laporan Presensi</h2>
+                <p id="report-subheader-info" style="margin-bottom:20px;"></p>
                 <table id="report-table">
                     <thead><tr><th>No.</th><th>Nama Siswa</th><th>Status</th></tr></thead>
                     <tbody id="report-table-body"></tbody>
                 </table>
             </div>
-            <button id="get-pdf-btn" class="btn" style="margin-top:20px; background-color: #28a745;">Dapatkan PDF</button>
+            <button id="download-pdf-btn" class="btn btn-success" style="margin-top:25px;"><i class="fas fa-file-pdf"></i> Selesaikan & Unduh PDF</button>
         </div>
+
+        <!-- ===== 6. THANK YOU VIEW ===== -->
+        <div id="thank-you-view" class="view container hidden">
+            <i class="fas fa-check-circle" style="font-size: 4em; color: var(--hadir); margin-bottom: 20px;"></i>
+            <h2>Terima Kasih!</h2>
+            <p>Anda telah menyelesaikan sesi mengajar hari ini. Poin telah ditambahkan ke profil Anda.</p>
+            <button id="back-to-dashboard-from-thanks" class="btn" style="margin-top: 20px; max-width: 300px; margin-left: auto; margin-right: auto;">Kembali ke Dasbor</button>
+        </div>
+
+        <!-- ===== 7. TEACHER PROFILE VIEW ===== -->
+        <div id="teacher-profile-view" class="view container hidden">
+            <button id="back-to-dashboard-from-profile" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali</button>
+            <div class="profile-header">
+                <i class="fas fa-user-circle" style="font-size: 5em; color: var(--secondary);"></i>
+                <h2 id="profile-name" style="margin-bottom: 5px;">Nama Pengajar</h2>
+                <p>Total Poin Anda</p>
+                <div id="profile-points">0</div>
+            </div>
+            <h3><i class="fas fa-archive"></i> Arsip Mengajar</h3>
+            <div id="teacher-archive-list"></div>
+        </div>
+
+        <!-- ===== 8. TEACHER ARCHIVE DETAIL VIEW ===== -->
+        <div id="teacher-archive-detail-view" class="view container hidden">
+            <button id="back-to-profile-from-detail" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali ke Profil</button>
+            <h2 id="archive-detail-header">Detail Presensi</h2>
+            <p id="archive-detail-subheader"></p>
+            <ul id="archive-detail-list">
+                <!-- Student list will be populated by JS -->
+            </ul>
+        </div>
+        
+        <!-- ================================== -->
+        <!-- ===== ADMIN VIEWS ================ -->
+        <!-- ================================== -->
+
+        <!-- ===== A1. ADMIN DASHBOARD VIEW ===== -->
+        <div id="admin-dashboard-view" class="view container hidden">
+            <div class="logout-container"><button id="admin-logout-btn" class="btn btn-sm btn-danger"><i class="fas fa-sign-out-alt"></i> Keluar</button></div>
+            <h2>Dasbor Admin</h2>
+            <p>Selamat datang, <strong id="admin-welcome-name">Admin</strong>! Berikut ringkasan aktivitas hari ini.</p>
+            
+            <h3>Statistik Kehadiran Hari Ini</h3>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div id="stats-hadir" class="stat-number">0</div>
+                    <div class="stat-label">Hadir</div>
+                </div>
+                <div class="stat-card">
+                    <div id="stats-izin" class="stat-number">0</div>
+                    <div class="stat-label">Izin</div>
+                </div>
+                 <div class="stat-card">
+                    <div id="stats-absen" class="stat-number">0</div>
+                    <div class="stat-label">Absen</div>
+                </div>
+            </div>
+
+            <h3>Status Pengisian Presensi Pengajar</h3>
+            <ul id="teacher-status-list"></ul>
+            
+            <div class="admin-controls-grid">
+                 <button id="manage-students-btn" class="btn"><i class="fas fa-user-cog"></i> Kelola Data Siswa</button>
+                 <button id="manage-records-btn" class="btn btn-danger"><i class="fas fa-undo"></i> Recovery Presensi</button>
+            </div>
+        </div>
+        
+        <!-- ===== A2. ADMIN STUDENT MANAGEMENT VIEW ===== -->
+        <div id="admin-student-management-view" class="view container hidden">
+            <button id="back-to-admin-dashboard-btn" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali ke Dasbor</button>
+            <h2>Manajemen Data Siswa</h2>
+            <p>Lihat, tambah, edit, atau hapus data siswa per kelas.</p>
+
+            <div class="student-management-controls">
+                <button id="view-class-a-btn" class="btn" style="flex:1;">Lihat Kelas A</button>
+                <button id="view-class-b-btn" class="btn" style="flex:1;">Lihat Kelas B</button>
+            </div>
+            
+            <h3 id="current-class-header" style="text-align:left; margin-top:20px;" data-current-class=""></h3>
+            <div id="student-table-container">
+                <p class="placeholder-text">Pilih kelas untuk melihat atau mengelola daftar siswa.</p>
+            </div>
+            
+            <div id="add-student-forms" class="hidden">
+                 <div class="add-student-grid">
+                    <div>
+                        <h4>Tambah Siswa Satuan</h4>
+                        <form id="add-single-student-form">
+                            <div class="form-group">
+                                <label for="new-student-name">Nama Siswa Baru</label>
+                                <input type="text" id="new-student-name" required placeholder="Masukkan nama lengkap">
+                            </div>
+                            <button type="submit" class="btn btn-success"><i class="fas fa-plus"></i> Tambah Siswa</button>
+                        </form>
+                    </div>
+                     <div>
+                        <h4>Tambah Massal (dari Google Sheet)</h4>
+                        <form id="add-bulk-student-form">
+                            <div class="form-group">
+                                <label for="bulk-student-list">Salin & Tempel Daftar Nama</label>
+                                <textarea id="bulk-student-list" rows="5" placeholder="Satu nama per baris..."></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-success"><i class="fas fa-users"></i> Tambah Semua</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== A3. ADMIN RECORDS (RECOVERY) VIEW ===== -->
+        <div id="admin-records-view" class="view container hidden">
+             <button id="back-to-admin-dashboard-btn-2" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali ke Dasbor</button>
+             <h2>Recovery / Reset Presensi</h2>
+             <p>Hapus catatan presensi jika terjadi kesalahan input (misal: data ganda). Poin pengajar akan dikembalikan secara otomatis.</p>
+             <div id="admin-records-list"></div>
+        </div>
+
     </div>
-    
+
+    <!-- ===== UI HELPERS (Loading, Modal, Help Bubble) ===== -->
     <div id="loading-overlay" class="hidden">
         <div class="spinner"></div>
         <p id="loading-text">Memuat...</p>
     </div>
 
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    // --- PENTING: GANTI DENGAN URL SCRIPT PRESENSI ANDA ---
-    const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyWoFzAJK63TMhYXTYjd6gATf_P_Xqic6a4x2loNvhDYaBVcJ0x2xjw5C6cu44t0a1nqA/exec';
+    <div id="custom-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header"><h2 id="modal-title">Judul Modal</h2></div>
+            <div class="modal-body" id="modal-body-content"></div>
+            <div class="modal-footer">
+                <button id="modal-cancel-btn" class="btn btn-secondary">Batal</button>
+                <button id="modal-confirm-btn" class="btn">OK</button>
+            </div>
+        </div>
+    </div>
     
-    // --- DATABASE NAMA SISWA ---
-    const dataSiswa = {
-        "Kelas A": ["Aghniya Hawa Laila Tsaliyanti", "Ambarwati Friska Panigoro", "Anita Khoirun Nufus","Azqya Muthiarani Putri", "Bunga Permatasari Anjayani", "M. Arjun Naja", "Mianis Nur Rahayu", "Muhamad Bagja Pratama","Rabby Radhiya"],
-        "Kelas B": ["Aisha Rafidah", "Ani Septiana", "Anna Rora Noveanti","Aqila Khairunnisa", "Atha Naufal mas uud", "Dyah Safitri", "Indah Cahyani Saharani", "Lisdawati", "Nabila Saki Rati", "Naqita Pratami Putri", "Rahmadhany", "Rina Khusnia Fahma"]
-    };
+    <button id="help-bubble" class="help-bubble hidden"><i class="fas fa-question"></i></button>
 
-    let sessionData = { pengajar: '', kelas: '', matkul: '', presensi: {} };
-
-    // --- Seleksi Elemen ---
-    const allViews = document.querySelectorAll('.view');
-    const loadingOverlay = document.getElementById('loading-overlay');
-    const loadingText = document.getElementById('loading-text');
-
-    // --- Fungsi Bantuan ---
-    function showView(viewId) { allViews.forEach(v => v.classList.add('hidden')); document.getElementById(viewId).classList.remove('hidden'); }
-    function showLoading(message) { loadingText.textContent = message; loadingOverlay.classList.remove('hidden'); }
-    function hideLoading() { loadingOverlay.classList.add('hidden'); }
-
-    // --- Alur Aplikasi ---
-
-    // 1. Login Pengajar
-    document.getElementById('login-form').onsubmit = (e) => {
-        e.preventDefault();
-        sessionData.pengajar = document.getElementById('nama-pengajar').value;
-        showLoading('Menyiapkan sesi...');
-        setTimeout(() => { hideLoading(); showView('class-selection-view'); }, 500);
-    };
-
-    // 2. Pilih Kelas
-    document.querySelector('.class-selection').onclick = (e) => {
-        if (e.target.matches('.btn')) {
-            sessionData.kelas = e.target.dataset.kelas;
-            renderAttendanceList(sessionData.kelas);
-            showView('attendance-view');
-        }
-    };
-
-    function renderAttendanceList(className) { /* ... (fungsi ini tidak berubah) ... */ }
-    document.getElementById('student-list').onclick = (e) => { /* ... (fungsi ini tidak berubah) ... */ };
-    document.getElementById('next-btn').onclick = () => showView('session-info-view');
-
-    // 3. Mengisi Info Sesi & MENYIMPAN DATA (PERUBAHAN UTAMA)
-    document.getElementById('session-info-form').onsubmit = (e) => {
-        e.preventDefault();
-        sessionData.matkul = document.getElementById('matkul').value;
-        showLoading('Menyimpan data presensi...');
-        
-        // Kirim data ke Google Apps Script
-        fetch(WEB_APP_URL, {
-            method: 'POST',
-            body: JSON.stringify(sessionData) // Kirim semua data sesi
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.status === 'success') {
-                // Jika berhasil disimpan, baru tampilkan laporan
-                renderReportView();
-                showView('report-view');
-            } else {
-                alert("Gagal menyimpan data ke Google Sheet. " + data.message);
-            }
-        })
-        .catch(err => {
-            console.error("Error:", err);
-            alert("Terjadi kesalahan jaringan. Gagal menyimpan data.");
-        })
-        .finally(() => {
-            hideLoading();
-        });
-    };
-    
-    // 4. Menampilkan Laporan & Unduh PDF (tidak berubah)
-    function renderReportView() { /* ... (fungsi ini tidak berubah) ... */ }
-    document.getElementById('get-pdf-btn').onclick = () => { /* ... (fungsi ini tidak berubah) ... */ };
-
-    // --- Implementasi fungsi-fungsi yang tidak berubah ---
-    function renderAttendanceList(className) {
-        document.getElementById('attendance-header').textContent = `Presensi ${className}`;
-        const listContainer = document.getElementById('student-list');
-        listContainer.innerHTML = '';
-        dataSiswa[className].sort().forEach(nama => {
-            sessionData.presensi[nama] = null;
-            const listItem = document.createElement('li');
-            listItem.className = 'student-item';
-            listItem.innerHTML = `<span>${nama}</span><div class="status-circles" data-nama="${nama}"><div class="status-circle hadir" data-status="Hadir" title="Hadir"></div><div class="status-circle absen" data-status="Absen" title="Absen"></div><div class="status-circle izin" data-status="Izin" title="Izin"></div></div>`;
-            listContainer.appendChild(listItem);
-        });
-    }
-    document.getElementById('student-list').onclick = (e) => {
-        if (e.target.matches('.status-circle')) {
-            const status = e.target.dataset.status;
-            const nama = e.target.parentElement.dataset.nama;
-            sessionData.presensi[nama] = status;
-            e.target.parentElement.querySelectorAll('.status-circle').forEach(c => c.classList.remove('active'));
-            e.target.classList.add('active');
-        }
-    };
-    function renderReportView() {
-        document.getElementById('report-header').textContent = `Laporan Presensi - ${sessionData.matkul}`;
-        document.getElementById('report-subheader').textContent = `Kelas ${sessionData.kelas} | Pengajar: ${sessionData.pengajar}`;
-        const tableBody = document.getElementById('report-table-body');
-        tableBody.innerHTML = '';
-        Object.entries(sessionData.presensi).sort().forEach(([nama, status], index) => {
-            const row = tableBody.insertRow();
-            row.innerHTML = `<td>${index + 1}</td><td>${nama}</td><td>${status || 'Tidak Diabsen'}</td>`;
-        });
-    }
-    document.getElementById('get-pdf-btn').onclick = () => {
-        showLoading('Membuat file PDF...');
-        const element = document.getElementById('report-content');
-        const opt = { margin: 0.5, filename: `Presensi_${sessionData.kelas}_${sessionData.matkul}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas:  { scale: 2 }, jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' } };
-        html2pdf().from(element).set(opt).save().then(() => {
-            hideLoading();
-            alert("PDF berhasil dibuat!");
-            location.reload();
-        });
-    };
-});
-</script>
 </body>
 </html>
+
