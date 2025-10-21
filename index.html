@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Presensi Interaktif - Cendekia Aksara</title>
     
-    <!-- PDF Generation Libraries (jsPDF & autoTable) -->
+    <!-- PDF & Image Generation Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     
     <!-- Firebase SDK (v11 Modular) -->
     <script type="module">
@@ -286,8 +287,8 @@
                 // Save attendance record
                 await addDoc(collection(db, "attendanceRecords"), sessionData);
 
-                // Calculate and update points
-                const points = 1000 + (duration - 80);
+                // --- POINT CALCULATION CHANGED ---
+                const points = 5000; // Fixed 5000 points per session
                 const userRef = doc(db, "users", currentUser.uid);
                 await updateDoc(userRef, {
                     points: increment(points)
@@ -378,17 +379,27 @@
             }, 5000);
         }
         
-        // --- Teacher Profile ---
+        // --- Teacher Profile & SALARY WITHDRAWAL ---
         async function renderTeacherProfile() {
             showLoading("Memuat profil...");
             try {
-                // Re-fetch user data to get latest points
                 const userRef = doc(db, "users", currentUser.uid);
                 const userSnap = await getDoc(userRef);
                 const userData = userSnap.data();
+                const userPoints = userData.points || 0;
 
                 document.getElementById('profile-name').textContent = userData.name;
-                document.getElementById('profile-points').textContent = (userData.points || 0).toLocaleString('id-ID');
+                document.getElementById('profile-points').textContent = userPoints.toLocaleString('id-ID');
+                document.getElementById('profile-salary-equivalent').textContent = `(Rp ${userPoints.toLocaleString('id-ID')})`;
+
+                // Salary withdrawal logic
+                const withdrawalContainer = document.getElementById('withdrawal-container');
+                if (userPoints >= 30000) {
+                    withdrawalContainer.innerHTML = `<button id="withdraw-salary-btn" class="btn btn-success"><i class="fas fa-wallet"></i> Tarik Gaji</button>`;
+                    document.getElementById('withdraw-salary-btn').addEventListener('click', () => renderWithdrawalForm(userPoints));
+                } else {
+                    withdrawalContainer.innerHTML = `<p class="placeholder-text" style="padding: 15px;">Kumpulkan minimal 30.000 poin untuk dapat menarik gaji.</p>`;
+                }
                 
                 // Fetch teaching archive
                 const recordsRef = collection(db, "attendanceRecords");
@@ -451,8 +462,116 @@
             showView('teacher-archive-detail-view');
         }
 
+        function renderWithdrawalForm(points) {
+            document.getElementById('withdrawal-name').value = currentUser.name;
+            document.getElementById('withdrawal-email').value = currentUser.email;
+            document.getElementById('withdrawal-bank').value = '';
+            document.getElementById('withdrawal-account').value = '';
+            
+            document.getElementById('withdrawal-points-amount').textContent = points.toLocaleString('id-ID');
+            document.getElementById('withdrawal-rupiah-amount').textContent = `Rp ${points.toLocaleString('id-ID')}`;
+            
+            document.getElementById('send-whatsapp-btn').disabled = true;
+
+            showView('salary-withdrawal-view');
+        }
+
+        document.getElementById('get-form-btn').addEventListener('click', async () => {
+            const bankName = document.getElementById('withdrawal-bank').value.trim();
+            const accountNumber = document.getElementById('withdrawal-account').value.trim();
+
+            if (!bankName || !accountNumber) {
+                showModal("Peringatan", "Nama Bank dan Nomor Rekening wajib diisi.");
+                return;
+            }
+
+            showLoading("Membuat formulir (JPEG)...");
+            
+            // Populate the capture form
+            document.getElementById('capture-name').textContent = currentUser.name;
+            document.getElementById('capture-email').textContent = currentUser.email;
+            document.getElementById('capture-points').textContent = document.getElementById('withdrawal-points-amount').textContent;
+            document.getElementById('capture-rupiah').textContent = document.getElementById('withdrawal-rupiah-amount').textContent;
+            document.getElementById('capture-bank').textContent = bankName;
+            document.getElementById('capture-account').textContent = accountNumber;
+            document.getElementById('capture-date').textContent = new Date().toLocaleDateString('id-ID', { dateStyle: 'full' });
+
+
+            const formToCapture = document.getElementById('form-to-capture');
+            try {
+                const canvas = await html2canvas(formToCapture, { scale: 2 });
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+
+                const link = document.createElement('a');
+                link.href = dataUrl;
+                link.download = `Formulir_Penarikan_Gaji_${currentUser.name.replace(/\s/g, '_')}.jpeg`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                hideLoading();
+                showModal("Sukses", "Formulir JPEG berhasil diunduh. Sekarang Anda dapat mengirim pengajuan melalui WhatsApp.");
+                document.getElementById('send-whatsapp-btn').disabled = false;
+
+            } catch (error) {
+                console.error("Error generating image:", error);
+                hideLoading();
+                showModal("Error", "Gagal membuat file gambar formulir.");
+            }
+        });
+        
+        document.getElementById('send-whatsapp-btn').addEventListener('click', async () => {
+            const name = document.getElementById('withdrawal-name').value;
+            const email = document.getElementById('withdrawal-email').value;
+            const bank = document.getElementById('withdrawal-bank').value;
+            const account = document.getElementById('withdrawal-account').value;
+            const points = document.getElementById('withdrawal-points-amount').textContent;
+            const rupiah = document.getElementById('withdrawal-rupiah-amount').textContent.replace('Rp ', '');
+
+            const message = `Halo Admin Cendekia Aksara,\n\nSaya ingin mengajukan penarikan gaji dengan detail sebagai berikut:\n\n*Nama:* ${name}\n*Email:* ${email}\n*Jumlah Penarikan:* ${points} Poin (${rupiah})\n\n*Detail Bank:*\n*Bank:* ${bank}\n*No. Rekening:* ${account}\n\nFormulir bukti penarikan terlampir bersama pesan ini. Mohon untuk segera diproses.\n\nTerima kasih.`;
+
+            const whatsappUrl = `https://wa.me/628895615630?text=${encodeURIComponent(message)}`;
+            
+            if (await showModal("Konfirmasi Final", "Anda akan dialihkan ke WhatsApp. Setelah mengirim pesan, poin Anda akan otomatis terpotong. Lanjutkan?", true)) {
+                showLoading("Memproses penarikan...");
+                try {
+                    const pointsToDeduct = parseInt(points.replace(/,/g, ''), 10);
+                    
+                    // 1. Log the withdrawal request
+                    const withdrawalRef = collection(db, "users", currentUser.uid, "withdrawalRequests");
+                    await addDoc(withdrawalRef, {
+                        points: pointsToDeduct,
+                        bankName: bank,
+                        accountNumber: account,
+                        status: "pending",
+                        requestedAt: serverTimestamp()
+                    });
+
+                    // 2. Deduct points from user - FIX: Set points directly to 0
+                    const userRef = doc(db, "users", currentUser.uid);
+                    await updateDoc(userRef, {
+                        points: 0
+                    });
+
+                    window.open(whatsappUrl, '_blank');
+                    
+                    hideLoading();
+                    showModal("Berhasil", "Pengajuan Anda telah dikirim dan poin telah diperbarui. Silakan kirim formulir JPEG yang sudah diunduh melalui WhatsApp.").then(() => {
+                        renderTeacherProfile(); // Go back to profile to see updated points
+                    });
+
+                } catch (error) {
+                    console.error("Error processing withdrawal:", error);
+                    hideLoading();
+                    showModal("Error", "Gagal memproses penarikan. Poin Anda belum terpotong. Silakan coba lagi.");
+                }
+            }
+        });
+
+
         document.getElementById('back-to-dashboard-from-profile').addEventListener('click', renderTeacherForm);
         document.getElementById('back-to-profile-from-detail').addEventListener('click', renderTeacherProfile);
+        document.getElementById('back-to-profile-from-withdrawal').addEventListener('click', renderTeacherProfile);
         
         // --- ADMIN WORKFLOW ---
 
@@ -697,12 +816,13 @@
                         const recordDate = record.createdAt.toDate();
                         const recordItem = document.createElement('div');
                         recordItem.className = 'record-item';
+                        // --- POINT CALCULATION CHANGED FOR DELETION ---
                         recordItem.innerHTML = `
                            <div class="record-info">
                                <p><strong>${record.matkul}</strong> - ${record.kelas}</p>
                                <p class="record-meta">Oleh ${record.pengajar} pada ${recordDate.toLocaleString('id-ID')}</p>
                            </div>
-                           <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}" data-uid="${record.pengajarUid}" data-points="${1000 + (record.durasi - 80)}"><i class="fas fa-trash"></i> Hapus</button>
+                           <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}" data-uid="${record.pengajarUid}" data-points="5000"><i class="fas fa-trash"></i> Hapus</button>
                         `;
                         container.appendChild(recordItem);
                     });
@@ -721,14 +841,14 @@
             if (deleteBtn) {
                 const recordId = deleteBtn.dataset.id;
                 const teacherUid = deleteBtn.dataset.uid;
-                const pointsToSubtract = parseInt(deleteBtn.dataset.points, 10);
+                const pointsToSubtract = 5000; // Fixed 5000 points
 
                 if (!teacherUid || teacherUid === 'undefined') {
                     showModal("Error", "Tidak dapat menghapus catatan ini karena ID pengajar tidak ditemukan. Catatan ini mungkin dibuat dengan versi aplikasi yang lebih lama.");
                     return;
                 }
 
-                if (await showModal("Konfirmasi Hapus", "Anda yakin ingin menghapus catatan presensi ini? Tindakan ini akan mengurangi poin pengajar dan tidak dapat diurungkan.", true)) {
+                if (await showModal("Konfirmasi Hapus", "Anda yakin ingin menghapus catatan presensi ini? Tindakan ini akan mengurangi 5.000 poin pengajar dan tidak dapat diurungkan.", true)) {
                     showLoading("Menghapus catatan...");
                     try {
                         // 1. Delete the attendance record
@@ -762,11 +882,12 @@
             'attendance-view': 'Ini adalah halaman presensi. Klik tombol di samping nama siswa untuk mengubah status kehadirannya. Tombol "Berikutnya" akan aktif setelah semua siswa diabsen.',
             'session-details-view': 'Catat materi yang dibahas hari ini. Masukkan juga jam mulai dan selesai mengajar. Durasi akan dihitung otomatis. Klik "Simpan & Buat Laporan" untuk finalisasi.',
             'report-view': 'Ini adalah rekap presensi yang baru saja Anda buat. Anda dapat mengunduhnya dalam format PDF untuk arsip.',
-            'thank-you-view': 'Terima kasih telah menyelesaikan sesi mengajar hari ini! Anda dapat kembali ke dasbor untuk memulai sesi baru.',
-            'teacher-profile-view': 'Di sini Anda dapat melihat total poin yang telah Anda kumpulkan dan riwayat sesi mengajar yang pernah Anda lakukan. Klik pada riwayat untuk melihat detail presensi.',
+            'thank-you-view': 'Terima kasih telah menyelesaikan sesi mengajar hari ini! 5.000 Poin telah ditambahkan ke profil Anda.',
+            'teacher-profile-view': 'Di sini Anda dapat melihat total poin (setara Rupiah) yang telah Anda kumpulkan. Jika poin mencukupi, tombol "Tarik Gaji" akan muncul untuk memulai proses penarikan.',
+            'salary-withdrawal-view': 'Isi data bank Anda dengan benar. Klik "Dapatkan Formulir" untuk mengunduh bukti dalam format gambar (JPEG). Setelah itu, tombol WhatsApp akan aktif untuk mengirim pengajuan.',
             'admin-dashboard-view': 'Dasbor Admin. Anda bisa melihat statistik kehadiran hari ini, memantau status presensi pengajar, mengelola data siswa, atau menghapus data presensi yang salah (Recovery).',
             'admin-student-management-view': 'Pilih kelas untuk melihat daftar siswanya. Anda bisa menambah siswa satu per satu atau secara massal dengan menyalin daftar nama. Anda juga bisa mengedit dan menghapus data siswa di sini.',
-            'admin-records-view': 'Halaman Recovery. Di sini Anda dapat melihat semua catatan presensi yang telah dikirim. Jika ada data ganda atau salah, Anda bisa menghapusnya. Menghapus data di sini akan mengembalikan (mengurangi) poin yang didapat pengajar dari sesi tersebut.',
+            'admin-records-view': 'Halaman Recovery. Di sini Anda dapat menghapus catatan presensi yang salah. Menghapus data akan mengembalikan (mengurangi) 5.000 poin dari pengajar yang bersangkutan.',
             'teacher-archive-detail-view': 'Ini adalah rincian presensi untuk sesi yang Anda pilih. Anda dapat melihat status kehadiran setiap siswa pada sesi tersebut. Tekan tombol "Kembali ke Profil" untuk melihat daftar arsip lainnya.'
         };
 
@@ -930,13 +1051,36 @@
 
 
         /* --- TEACHER PROFILE & ARCHIVE DETAIL --- */
-        .profile-header { text-align: center; margin-bottom: 30px; }
+        .profile-header { text-align: center; margin-bottom: 20px; }
         #profile-points { font-size: 3em; font-weight: 700; color: var(--secondary); }
+        #profile-salary-equivalent { font-size: 1.2em; color: var(--text-light); margin-top: -10px; margin-bottom: 20px;}
+        #withdrawal-container { margin-bottom: 30px; }
         .archive-item { padding: 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 10px; cursor: pointer; transition: all 0.2s ease; }
         .archive-item:hover { background-color: var(--accent); border-color: var(--secondary); }
         .archive-header { display: flex; justify-content: space-between; align-items: center; font-weight: 500; }
         #archive-detail-list { list-style: none; padding: 0; margin-top: 20px; border-top: 1px solid var(--border); }
         #archive-detail-list li { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--accent); }
+        
+        /* --- SALARY WITHDRAWAL VIEW & FORM CAPTURE --- */
+        .withdrawal-summary { background-color: var(--accent); padding: 20px; border-radius: 12px; text-align: center; margin-bottom: 25px; }
+        .withdrawal-summary p { margin: 0; font-size: 1.1em; color: var(--text-light); }
+        .withdrawal-summary h3 { margin: 5px 0 0; font-size: 2em; color: var(--primary); }
+        .withdrawal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+
+        /* This is the printable/capturable form, hidden from view */
+        #form-to-capture {
+            position: absolute;
+            left: -9999px;
+            width: 800px;
+            padding: 40px;
+            background: white;
+            color: black;
+            font-family: 'Times New Roman', serif;
+            border: 2px solid black;
+        }
+        #form-to-capture h2 { color: black; text-align: center; font-size: 24px; margin-bottom: 10px; }
+        #form-to-capture p { color: #333; text-align: left; font-size: 16px; line-height: 1.8; margin: 5px 0;}
+        #form-to-capture .form-section { border-top: 1px solid #ccc; padding-top: 15px; margin-top: 15px; }
 
 
         /* --- THANK YOU & CONFETTI --- */
@@ -1001,7 +1145,7 @@
                 box-shadow: none; 
                 margin: 0;
             }
-            .class-selection, .add-student-grid, .admin-controls-grid { grid-template-columns: 1fr; }
+            .class-selection, .add-student-grid, .admin-controls-grid, .withdrawal-actions { grid-template-columns: 1fr; }
             .student-item { flex-direction: column; align-items: flex-start; gap: 15px; }
         }
 
@@ -1102,7 +1246,7 @@
         <div id="thank-you-view" class="view container hidden">
             <i class="fas fa-check-circle" style="font-size: 4em; color: var(--hadir); margin-bottom: 20px;"></i>
             <h2>Terima Kasih!</h2>
-            <p>Anda telah menyelesaikan sesi mengajar hari ini. Poin telah ditambahkan ke profil Anda.</p>
+            <p>Anda telah menyelesaikan sesi mengajar hari ini. 5.000 Poin telah ditambahkan ke profil Anda.</p>
             <button id="back-to-dashboard-from-thanks" class="btn" style="margin-top: 20px; max-width: 300px; margin-left: auto; margin-right: auto;">Kembali ke Dasbor</button>
         </div>
 
@@ -1114,7 +1258,9 @@
                 <h2 id="profile-name" style="margin-bottom: 5px;">Nama Pengajar</h2>
                 <p>Total Poin Anda</p>
                 <div id="profile-points">0</div>
+                <p id="profile-salary-equivalent">(Rp 0)</p>
             </div>
+            <div id="withdrawal-container"></div>
             <h3><i class="fas fa-archive"></i> Arsip Mengajar</h3>
             <div id="teacher-archive-list"></div>
         </div>
@@ -1124,9 +1270,43 @@
             <button id="back-to-profile-from-detail" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali ke Profil</button>
             <h2 id="archive-detail-header">Detail Presensi</h2>
             <p id="archive-detail-subheader"></p>
-            <ul id="archive-detail-list">
-                <!-- Student list will be populated by JS -->
-            </ul>
+            <ul id="archive-detail-list"></ul>
+        </div>
+        
+        <!-- ===== 9. SALARY WITHDRAWAL VIEW ===== -->
+        <div id="salary-withdrawal-view" class="view container hidden">
+            <button id="back-to-profile-from-withdrawal" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali ke Profil</button>
+            <h2>Formulir Penarikan Gaji</h2>
+            <p>Lengkapi data di bawah untuk mengajukan penarikan seluruh poin Anda.</p>
+
+            <div class="withdrawal-summary">
+                <p>Jumlah Poin yang Akan Ditarik</p>
+                <h3 id="withdrawal-points-amount">0</h3>
+                <h3 id="withdrawal-rupiah-amount">Rp 0</h3>
+            </div>
+            
+            <form id="withdrawal-form">
+                <div class="form-group">
+                    <label for="withdrawal-name">Nama Lengkap</label>
+                    <input type="text" id="withdrawal-name" required>
+                </div>
+                <div class="form-group">
+                    <label for="withdrawal-email">Email Terdaftar</label>
+                    <input type="email" id="withdrawal-email" required readonly style="background:#eee;">
+                </div>
+                 <div class="form-group">
+                    <label for="withdrawal-bank">Nama Bank</label>
+                    <input type="text" id="withdrawal-bank" required placeholder="cth: BCA, Mandiri, BNI">
+                </div>
+                 <div class="form-group">
+                    <label for="withdrawal-account">Nomor Rekening</label>
+                    <input type="number" id="withdrawal-account" required placeholder="Masukkan nomor rekening valid">
+                </div>
+                <div class="withdrawal-actions">
+                    <button type="button" id="get-form-btn" class="btn"><i class="fas fa-download"></i> Dapatkan Formulir (JPEG)</button>
+                    <button type="button" id="send-whatsapp-btn" class="btn btn-success" disabled><i class="fab fa-whatsapp"></i> Kirim Pengajuan via WhatsApp</button>
+                </div>
+            </form>
         </div>
         
         <!-- ================================== -->
@@ -1234,6 +1414,23 @@
     </div>
     
     <button id="help-bubble" class="help-bubble hidden"><i class="fas fa-question"></i></button>
+
+    <!-- Hidden element for capturing as image -->
+    <div id="form-to-capture">
+        <h2 style="text-align:center; font-size:24px; margin-bottom: 20px; border-bottom: 2px solid black; padding-bottom: 10px;">FORMULIR PENARIKAN GAJI<br><span style="font-size: 16px; font-weight: normal;">Cendekia Aksara</span></h2>
+        <p><strong>Tanggal Pengajuan:</strong> <span id="capture-date"></span></p>
+        <p><strong>Nama Pengajar:</strong> <span id="capture-name"></span></p>
+        <p><strong>Email:</strong> <span id="capture-email"></span></p>
+        <div class="form-section">
+            <p><strong>Jumlah Penarikan (Poin):</strong> <span id="capture-points"></span></p>
+            <p><strong>Jumlah Penarikan (Rupiah):</strong> <span id="capture-rupiah"></span></p>
+        </div>
+        <div class="form-section">
+            <p><strong>Nama Bank Tujuan:</strong> <span id="capture-bank"></span></p>
+            <p><strong>Nomor Rekening:</strong> <span id="capture-account"></span></p>
+        </div>
+        <p style="margin-top: 30px; font-size: 14px; font-style: italic;">Formulir ini dibuat secara otomatis oleh sistem. Mohon untuk tidak mengubah data apa pun.</p>
+    </div>
 
 </body>
 </html>
