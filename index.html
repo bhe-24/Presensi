@@ -35,7 +35,8 @@
         let currentUser = null;
         let currentViewId = 'login-view';
         let sessionData = {};
-        const dataSiswa = { "Kelas A": [], "Kelas B": [] };
+        // [MODIFIKASI] dataSiswa akan diisi secara dinamis dengan key unik (cth: "Kelas A_S1")
+        const dataSiswa = {}; 
 
         // --- DOM Elements ---
         const loadingOverlay = document.getElementById('loading-overlay');
@@ -145,6 +146,8 @@
 
         function renderTeacherForm() {
             document.getElementById('teacher-form-pengajar').value = currentUser.name;
+            // Reset semester dropdown
+            document.getElementById('teacher-form-semester').value = "";
             showView('teacher-form-view');
             hideLoading();
         }
@@ -156,33 +159,45 @@
             const kelas = e.submitter.dataset.kelas;
             if (!kelas) return;
 
+            // [BARU] Ambil semester
+            const semester = document.getElementById('teacher-form-semester').value;
+
             sessionData = {
                 pengajarUid: currentUser.uid,
                 pengajar: document.getElementById('teacher-form-pengajar').value,
                 matkul: document.getElementById('teacher-form-matkul').value,
                 kelas: kelas,
+                semester: semester, // [BARU] Simpan semester
                 presensi: {},
                 createdAt: serverTimestamp()
             };
 
-            if (!sessionData.matkul) {
-                showModal("Peringatan", "Nama mata pelajaran wajib diisi.");
+            // [MODIFIKASI] Cek semester juga
+            if (!sessionData.matkul || !sessionData.semester) {
+                showModal("Peringatan", "Nama mata pelajaran dan semester wajib diisi.");
                 return;
             }
             
-            showLoading(`Memuat daftar siswa ${kelas}...`);
+            showLoading(`Memuat daftar siswa ${kelas} (Semester ${semester})...`); // [MODIFIKASI] Teks loading
             try {
-                const studentsCol = collection(db, 'students', kelas, 'roster');
+                // [FIX] Gabungkan kelas dan semester menjadi satu ID Dokumen
+                // Path salah: students/Kelas A/Semester 1/roster (4 segments)
+                // Path benar: students/Kelas A_S1/roster (3 segments)
+                const classSemDocId = `${kelas}_S${semester}`; // e.g., "Kelas A_S1"
+                const studentsCol = collection(db, 'students', classSemDocId, 'roster');
                 const studentSnapshot = await getDocs(studentsCol);
-                dataSiswa[kelas] = studentSnapshot.docs.map(doc => ({id: doc.id, ...doc.data()})).sort((a,b) => a.name.localeCompare(b.name));
                 
-                if (dataSiswa[kelas].length === 0) {
-                    showModal("Info", `Tidak ada data siswa ditemukan untuk ${kelas}. Hubungi admin.`);
+                // [FIX] Gunakan classSemDocId sebagai key unik untuk cache lokal
+                const dataSiswaKey = classSemDocId;
+                dataSiswa[dataSiswaKey] = studentSnapshot.docs.map(doc => ({id: doc.id, ...doc.data()})).sort((a,b) => a.name.localeCompare(b.name));
+                
+                if (dataSiswa[dataSiswaKey].length === 0) {
+                    showModal("Info", `Daftar siswa untuk <strong>${kelas} (Semester ${semester})</strong> masih kosong. <br><br>Silakan hubungi admin untuk menambahkan data siswa terlebih dahulu.`);
                     hideLoading();
                     return;
                 }
                 
-                renderAttendanceView(kelas);
+                renderAttendanceView(kelas, semester, dataSiswaKey); // [MODIFIKASI] Kirim key
 
             } catch (error) {
                 console.error("Error fetching students: ", error);
@@ -191,12 +206,14 @@
             }
         });
 
-        function renderAttendanceView(kelas) {
+        function renderAttendanceView(kelas, semester, dataSiswaKey) { // [MODIFIKASI] Terima key
             const container = document.getElementById('student-list-container');
             container.innerHTML = '';
-            document.getElementById('attendance-header').textContent = `Presensi ${kelas}`;
+            // [MODIFIKASI] Update header
+            document.getElementById('attendance-header').textContent = `Presensi ${kelas} - Semester ${semester}`;
 
-            dataSiswa[kelas].forEach(siswa => {
+            // [MODIFIKASI] Gunakan key yang benar
+            dataSiswa[dataSiswaKey].forEach(siswa => {
                 sessionData.presensi[siswa.id] = { name: siswa.name, status: null };
                 const item = document.createElement('div');
                 item.className = 'student-item';
@@ -284,7 +301,7 @@
             
             showLoading("Menyimpan laporan presensi...");
             try {
-                // Save attendance record
+                // Save attendance record (sessionData now includes semester)
                 await addDoc(collection(db, "attendanceRecords"), sessionData);
 
                 // --- POINT CALCULATION CHANGED ---
@@ -303,8 +320,9 @@
         });
         
         function renderReportView() {
+            // [MODIFIKASI] Tampilkan semester di laporan
             document.getElementById('report-header-title').textContent = `Laporan Presensi - ${sessionData.matkul}`;
-            document.getElementById('report-subheader-info').textContent = `Kelas ${sessionData.kelas} | Pengajar: ${sessionData.pengajar}`;
+            document.getElementById('report-subheader-info').textContent = `Kelas ${sessionData.kelas} (Semester ${sessionData.semester}) | Pengajar: ${sessionData.pengajar}`;
             
             const tableBody = document.getElementById('report-table-body');
             tableBody.innerHTML = '';
@@ -326,7 +344,8 @@
              doc.setFontSize(18);
              doc.text(`Laporan Presensi - ${sessionData.matkul}`, 14, 22);
              doc.setFontSize(12);
-             doc.text(`Kelas: ${sessionData.kelas} | Pengajar: ${sessionData.pengajar}`, 14, 30);
+             // [MODIFIKASI] Tampilkan semester di PDF
+             doc.text(`Kelas: ${sessionData.kelas} (Semester ${sessionData.semester}) | Pengajar: ${sessionData.pengajar}`, 14, 30);
              doc.text(`Tanggal: ${new Date().toLocaleDateString('id-ID', { dateStyle: 'full' })}`, 14, 36);
 
              const tableColumn = ["No.", "Nama Siswa", "Status Kehadiran"];
@@ -353,7 +372,8 @@
                  columnStyles: { 1: { halign: 'left' } } // Nama Siswa left-aligned
              });
              
-             const fileName = `Presensi_${sessionData.kelas}_${sessionData.matkul.replace(/\s/g, '_')}.pdf`;
+             // [MODIFIKASI] Nama file PDF
+             const fileName = `Presensi_${sessionData.kelas}_S${sessionData.semester}_${sessionData.matkul.replace(/\s/g, '_')}.pdf`;
              doc.save(fileName);
              
              hideLoading();
@@ -419,9 +439,10 @@
                         const recordDate = record.createdAt.toDate();
                         const archiveItem = document.createElement('div');
                         archiveItem.className = 'archive-item';
+                        // [MODIFIKASI] Tampilkan semester di arsip
                         archiveItem.innerHTML = `
                             <div class="archive-header">
-                                <strong>${record.matkul} - ${record.kelas}</strong>
+                                <strong>${record.matkul} - ${record.kelas} (S${record.semester || 'N/A'})</strong>
                                 <span>${recordDate.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}</span>
                             </div>
                         `;
@@ -442,8 +463,9 @@
         }
 
         function renderArchiveDetailView(record) {
+            // [MODIFIKASI] Tampilkan semester di detail arsip
             document.getElementById('archive-detail-header').textContent = `Detail: ${record.matkul}`;
-            document.getElementById('archive-detail-subheader').textContent = `Kelas ${record.kelas} - ${record.createdAt.toDate().toLocaleDateString('id-ID', { dateStyle: 'full' })}`;
+            document.getElementById('archive-detail-subheader').textContent = `Kelas ${record.kelas} (S${record.semester}) - ${record.createdAt.toDate().toLocaleDateString('id-ID', { dateStyle: 'full' })}`;
             
             const listContainer = document.getElementById('archive-detail-list');
             listContainer.innerHTML = '';
@@ -592,7 +614,8 @@
                 
                 recordsSnapshot.forEach(doc => {
                     const record = doc.data();
-                    filledClasses.add(`${record.pengajar} - ${record.kelas}`);
+                    // [MODIFIKASI] Status key sekarang menyertakan semester
+                    filledClasses.add(`${record.pengajar} - ${record.kelas} - S${record.semester}`);
                     Object.values(record.presensi).forEach(s => {
                         if (s.status === 'Hadir') totalHadir++;
                         if (s.status === 'Izin') totalIzin++;
@@ -613,14 +636,24 @@
                 const statusList = document.getElementById('teacher-status-list');
                 statusList.innerHTML = '';
                 allTeachers.forEach(teacherName => {
-                    const hasFilledA = filledClasses.has(`${teacherName} - Kelas A`);
-                    const hasFilledB = filledClasses.has(`${teacherName} - Kelas B`);
+                    // [MODIFIKASI] Cek status untuk 6 kemungkinan (2 kelas x 3 semester)
+                    const hasA1 = filledClasses.has(`${teacherName} - Kelas A - S1`);
+                    const hasA2 = filledClasses.has(`${teacherName} - Kelas A - S2`);
+                    const hasA3 = filledClasses.has(`${teacherName} - Kelas A - S3`);
+                    const hasB1 = filledClasses.has(`${teacherName} - Kelas B - S1`);
+                    const hasB2 = filledClasses.has(`${teacherName} - Kelas B - S2`);
+                    const hasB3 = filledClasses.has(`${teacherName} - Kelas B - S3`);
+                    
                     const li = document.createElement('li');
                     li.innerHTML = `
                         <span>${teacherName}</span>
                         <div>
-                           <span class="tag ${hasFilledA ? 'tag-status-hadir' : 'tag-status-absen'}">Kelas A</span>
-                           <span class="tag ${hasFilledB ? 'tag-status-hadir' : 'tag-status-absen'}">Kelas B</span>
+                           <span class="tag ${hasA1 ? 'tag-status-hadir' : 'tag-status-absen'}">A-S1</span>
+                           <span class="tag ${hasA2 ? 'tag-status-hadir' : 'tag-status-absen'}">A-S2</span>
+                           <span class="tag ${hasA3 ? 'tag-status-hadir' : 'tag-status-absen'}">A-S3</span>
+                           <span class="tag ${hasB1 ? 'tag-status-hadir' : 'tag-status-absen'}">B-S1</span>
+                           <span class="tag ${hasB2 ? 'tag-status-hadir' : 'tag-status-absen'}">B-S2</span>
+                           <span class="tag ${hasB3 ? 'tag-status-hadir' : 'tag-status-absen'}">B-S3</span>
                         </div>
                     `;
                     statusList.appendChild(li);
@@ -637,21 +670,35 @@
 
         document.getElementById('manage-students-btn').addEventListener('click', () => {
             showView('admin-student-management-view');
-            document.getElementById('student-table-container').innerHTML = '<p class="placeholder-text">Pilih kelas untuk melihat atau mengelola daftar siswa.</p>';
+            document.getElementById('student-table-container').innerHTML = '<p class="placeholder-text">Pilih kelas dan semester untuk melihat atau mengelola daftar siswa.</p>';
             document.getElementById('add-student-forms').classList.add('hidden');
         });
 
         document.getElementById('manage-records-btn').addEventListener('click', renderAdminRecordsView);
         
-        document.getElementById('view-class-a-btn').addEventListener('click', () => renderStudentTable('Kelas A'));
-        document.getElementById('view-class-b-btn').addEventListener('click', () => renderStudentTable('Kelas B'));
+        // [BARU] Listener baru untuk grid 6 tombol
+        document.querySelector('.student-management-controls').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-kelas]');
+            if (btn) {
+                const kelas = btn.dataset.kelas;
+                const semester = btn.dataset.semester;
+                if (kelas && semester) {
+                    renderStudentTable(kelas, semester);
+                }
+            }
+        });
 
-        async function renderStudentTable(kelas) {
-            showLoading(`Memuat siswa ${kelas}...`);
+
+        async function renderStudentTable(kelas, semester) { // [MODIFIKASI] Terima semester
+            showLoading(`Memuat siswa ${kelas} (Semester ${semester})...`); // [MODIFIKASI] Teks
             const container = document.getElementById('student-table-container');
             document.getElementById('add-student-forms').classList.remove('hidden');
-            document.getElementById('current-class-header').textContent = `Daftar Siswa: ${kelas}`;
-            document.getElementById('current-class-header').dataset.currentClass = kelas;
+            
+            // [MODIFIKASI] Simpan kelas dan semester di header
+            const header = document.getElementById('current-class-header');
+            header.textContent = `Daftar Siswa: ${kelas} - Semester ${semester}`;
+            header.dataset.currentClass = kelas;
+            header.dataset.currentSemester = semester;
             
             container.innerHTML = `
                 <table class="student-table">
@@ -661,13 +708,17 @@
             const tableBody = document.getElementById('student-table-body');
             
             try {
-                const studentsCol = collection(db, 'students', kelas, 'roster');
+                // [FIX] Gabungkan kelas dan semester menjadi satu ID Dokumen
+                // Path salah: students/Kelas A/Semester 1/roster (4 segments)
+                // Path benar: students/Kelas A_S1/roster (3 segments)
+                const classSemDocId = `${kelas}_S${semester}`; // e.g., "Kelas A_S1"
+                const studentsCol = collection(db, 'students', classSemDocId, 'roster');
                 const studentSnapshot = await getDocs(studentsCol);
                 const students = studentSnapshot.docs.map(doc => ({id: doc.id, ...doc.data()})).sort((a,b) => a.name.localeCompare(b.name));
                 
                 tableBody.innerHTML = '';
                 if(students.length === 0){
-                   tableBody.innerHTML = `<tr><td colspan="2">Belum ada siswa di kelas ini.</td></tr>`;
+                   tableBody.innerHTML = `<tr><td colspan="2">Belum ada siswa di kelas ini untuk semester ${semester}.</td></tr>`;
                 } else {
                    students.forEach(siswa => {
                        const row = tableBody.insertRow();
@@ -690,7 +741,16 @@
         
         // --- Admin Student Management Event Listeners ---
         document.getElementById('student-table-container').addEventListener('click', async (e) => {
-            const currentClass = document.getElementById('current-class-header').dataset.currentClass;
+            // [MODIFIKASI] Ambil kelas dan semester dari header
+            const header = document.getElementById('current-class-header');
+            const currentClass = header.dataset.currentClass;
+            const currentSemester = header.dataset.currentSemester;
+            
+            if (!currentClass || !currentSemester) return; // Jangan lakukan apa-apa jika kelas/sem belum dipilih
+            
+            // [FIX] Buat ID Dokumen gabungan
+            const classSemDocId = `${currentClass}_S${currentSemester}`;
+
             
             if (e.target.closest('.edit-student-btn')) {
                 const btn = e.target.closest('.edit-student-btn');
@@ -713,9 +773,10 @@
                 
                 showLoading("Menyimpan perubahan...");
                 try {
-                    const studentRef = doc(db, 'students', currentClass, 'roster', studentId);
+                    // [FIX] Path diubah
+                    const studentRef = doc(db, 'students', classSemDocId, 'roster', studentId);
                     await updateDoc(studentRef, { name: newName });
-                    renderStudentTable(currentClass); // Re-render table
+                    renderStudentTable(currentClass, currentSemester); // [MODIFIKASI] Kirim 2 arg
                 } catch(error) {
                     console.error("Error updating student:", error);
                     showModal("Error", "Gagal memperbarui nama siswa.");
@@ -730,8 +791,9 @@
                  if (await showModal("Konfirmasi", "Anda yakin ingin menghapus siswa ini?", true)) {
                      showLoading("Menghapus siswa...");
                      try {
-                         await deleteDoc(doc(db, 'students', currentClass, 'roster', studentId));
-                         renderStudentTable(currentClass);
+                        // [FIX] Path diubah
+                         await deleteDoc(doc(db, 'students', classSemDocId, 'roster', studentId));
+                         renderStudentTable(currentClass, currentSemester); // [MODIFIKASI] Kirim 2 arg
                      } catch(error) {
                          console.error("Error deleting student:", error);
                          showModal("Error", "Gagal menghapus siswa.");
@@ -744,20 +806,32 @@
         
         document.getElementById('add-single-student-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const currentClass = document.getElementById('current-class-header').dataset.currentClass;
+            // [MODIFIKASI] Ambil kelas dan semester dari header
+            const header = document.getElementById('current-class-header');
+            const currentClass = header.dataset.currentClass;
+            const currentSemester = header.dataset.currentSemester;
             const nameInput = document.getElementById('new-student-name');
             const newName = nameInput.value.trim();
+            
+            if (!currentClass || !currentSemester) {
+                showModal("Peringatan", "Pilih kelas dan semester terlebih dahulu.");
+                return;
+            }
 
             if (!newName) {
                 showModal("Peringatan", "Nama siswa tidak boleh kosong.");
                 return;
             }
+            
+            // [FIX] Buat ID Dokumen gabungan
+            const classSemDocId = `${currentClass}_S${currentSemester}`;
 
             showLoading("Menambahkan siswa...");
             try {
-                await addDoc(collection(db, 'students', currentClass, 'roster'), { name: newName });
+                // [FIX] Path diubah
+                await addDoc(collection(db, 'students', classSemDocId, 'roster'), { name: newName });
                 nameInput.value = '';
-                renderStudentTable(currentClass);
+                renderStudentTable(currentClass, currentSemester); // [MODIFIKASI] Kirim 2 arg
             } catch (error) {
                 console.error("Error adding student:", error);
                 showModal("Error", "Gagal menambahkan siswa.");
@@ -768,27 +842,39 @@
         
         document.getElementById('add-bulk-student-form').addEventListener('submit', async (e) => {
              e.preventDefault();
-             const currentClass = document.getElementById('current-class-header').dataset.currentClass;
+            // [MODIFIKASI] Ambil kelas dan semester dari header
+            const header = document.getElementById('current-class-header');
+            const currentClass = header.dataset.currentClass;
+            const currentSemester = header.dataset.currentSemester;
              const listTextarea = document.getElementById('bulk-student-list');
              const names = listTextarea.value.trim().split('\n').map(name => name.trim()).filter(name => name);
              
+             if (!currentClass || !currentSemester) {
+                showModal("Peringatan", "Pilih kelas dan semester terlebih dahulu.");
+                return;
+             }
+
              if (names.length === 0) {
                  showModal("Peringatan", "Daftar nama tidak boleh kosong.");
                  return;
              }
+             
+             // [FIX] Buat ID Dokumen gabungan
+             const classSemDocId = `${currentClass}_S${currentSemester}`;
 
-             if (await showModal("Konfirmasi", `Anda akan menambahkan ${names.length} siswa baru. Lanjutkan?`, true)) {
+             if (await showModal("Konfirmasi", `Anda akan menambahkan ${names.length} siswa baru ke ${currentClass} (Semester ${currentSemester}). Lanjutkan?`, true)) { // [MODIFIKASI] Teks
                  showLoading("Menambahkan siswa secara massal...");
                  try {
                      const batch = writeBatch(db);
-                     const rosterCol = collection(db, 'students', currentClass, 'roster');
+                     // [FIX] Path diubah
+                     const rosterCol = collection(db, 'students', classSemDocId, 'roster');
                      names.forEach(name => {
                          const newStudentRef = doc(rosterCol);
                          batch.set(newStudentRef, { name: name });
                      });
                      await batch.commit();
                      listTextarea.value = '';
-                     renderStudentTable(currentClass);
+                     renderStudentTable(currentClass, currentSemester); // [MODIFIKASI] Kirim 2 arg
                  } catch (error) {
                      console.error("Error adding bulk students:", error);
                      showModal("Error", "Gagal menambahkan siswa secara massal.");
@@ -816,10 +902,10 @@
                         const recordDate = record.createdAt.toDate();
                         const recordItem = document.createElement('div');
                         recordItem.className = 'record-item';
-                        // --- POINT CALCULATION CHANGED FOR DELETION ---
+                        // [MODIFIKASI] Tampilkan semester di riwayat
                         recordItem.innerHTML = `
                            <div class="record-info">
-                               <p><strong>${record.matkul}</strong> - ${record.kelas}</p>
+                               <p><strong>${record.matkul}</strong> - ${record.kelas} (Semester ${record.semester || 'N/A'})</p>
                                <p class="record-meta">Oleh ${record.pengajar} pada ${recordDate.toLocaleString('id-ID')}</p>
                            </div>
                            <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}" data-uid="${record.pengajarUid}" data-points="5000"><i class="fas fa-trash"></i> Hapus</button>
@@ -878,7 +964,7 @@
         // --- Help Bubble Logic ---
         const helpMessages = {
             'login-view': 'Masukkan email dan password Anda yang terdaftar. Gunakan format email <strong>@ac.id</strong> untuk pengajar, dan email <strong>admin@ac.id</strong> dengan password <strong>admin1</strong> untuk masuk sebagai admin.',
-            'teacher-form-view': 'Selamat datang, Pengajar! Klik tombol "Profil Saya" untuk melihat poin dan riwayat mengajar. Isi formulir di bawah untuk memulai sesi presensi baru.',
+            'teacher-form-view': 'Selamat datang, Pengajar! Klik tombol "Profil Saya" untuk melihat poin dan riwayat mengajar. Isi formulir di bawah (termasuk semester) untuk memulai sesi presensi baru.',
             'attendance-view': 'Ini adalah halaman presensi. Klik tombol di samping nama siswa untuk mengubah status kehadirannya. Tombol "Berikutnya" akan aktif setelah semua siswa diabsen.',
             'session-details-view': 'Catat materi yang dibahas hari ini. Masukkan juga jam mulai dan selesai mengajar. Durasi akan dihitung otomatis. Klik "Simpan & Buat Laporan" untuk finalisasi.',
             'report-view': 'Ini adalah rekap presensi yang baru saja Anda buat. Anda dapat mengunduhnya dalam format PDF untuk arsip.',
@@ -886,7 +972,7 @@
             'teacher-profile-view': 'Di sini Anda dapat melihat total poin (setara Rupiah) yang telah Anda kumpulkan. Jika poin mencukupi, tombol "Tarik Gaji" akan muncul untuk memulai proses penarikan.',
             'salary-withdrawal-view': 'Isi data bank Anda dengan benar. Klik "Dapatkan Formulir" untuk mengunduh bukti dalam format gambar (JPEG). Setelah itu, tombol WhatsApp akan aktif untuk mengirim pengajuan.',
             'admin-dashboard-view': 'Dasbor Admin. Anda bisa melihat statistik kehadiran hari ini, memantau status presensi pengajar, mengelola data siswa, atau menghapus data presensi yang salah (Recovery).',
-            'admin-student-management-view': 'Pilih kelas untuk melihat daftar siswanya. Anda bisa menambah siswa satu per satu atau secara massal dengan menyalin daftar nama. Anda juga bisa mengedit dan menghapus data siswa di sini.',
+            'admin-student-management-view': 'Pilih kelas dan semester untuk melihat daftar siswanya. Anda bisa menambah siswa satu per satu atau secara massal dengan menyalin daftar nama. Anda juga bisa mengedit dan menghapus data siswa di sini.',
             'admin-records-view': 'Halaman Recovery. Di sini Anda dapat menghapus catatan presensi yang salah. Menghapus data akan mengembalikan (mengurangi) 5.000 poin dari pengajar yang bersangkutan.',
             'teacher-archive-detail-view': 'Ini adalah rincian presensi untuk sesi yang Anda pilih. Anda dapat melihat status kehadiran setiap siswa pada sesi tersebut. Tekan tombol "Kembali ke Profil" untuk melihat daftar arsip lainnya.'
         };
@@ -943,12 +1029,13 @@
         /* --- Forms & Buttons --- */
         .form-group { margin-bottom: 20px; text-align: left; }
         .form-group label { display: block; font-weight: 600; margin-bottom: 8px; font-size: 0.9em; }
-        .form-group input, .form-group textarea {
+        .form-group input, .form-group textarea, .form-group select { /* [MODIFIKASI] Tambah select */
             width: 100%; padding: 12px 15px; border: 1px solid var(--border);
             border-radius: 8px; font-size: 1em; font-family: 'Poppins', sans-serif;
             transition: border-color 0.2s, box-shadow 0.2s;
+            background-color: var(--white); /* Pastikan select punya background */
         }
-        .form-group input:focus, .form-group textarea:focus {
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus { /* [MODIFIKASI] Tambah select */
             outline: none; border-color: var(--secondary);
             box-shadow: 0 0 0 3px rgba(0, 90, 156, 0.2);
         }
@@ -1031,10 +1118,21 @@
             padding: 15px; border-bottom: 1px solid var(--accent);
         }
         #teacher-status-list li:last-child { border-bottom: none; }
-        #teacher-status-list li > div { display: flex; gap: 10px; }
+        #teacher-status-list li > div { display: flex; gap: 5px; flex-wrap: wrap; } /* [MODIFIKASI] Wrap tag */
 
         /* --- ADMIN STUDENT/RECORDS MANAGEMENT --- */
-        .student-management-controls { display: flex; gap: 15px; margin-bottom: 25px; }
+        .student-management-controls { margin-bottom: 25px; } /* [MODIFIKASI] Hapus flex */
+        .class-semester-grid { /* [BARU] */
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+        }
+        .class-semester-grid .btn-sm { /* [MODIFIKASI] Ubah target */
+            width: 100%;
+            padding: 10px;
+            font-size: 0.9em; /* Sedikit lebih besar dari btn-sm biasa */
+            justify-content: center;
+        }
         .student-table { width: 100%; border-collapse: collapse; }
         .student-table th, .student-table td { padding: 12px; border: 1px solid var(--border); text-align: left; }
         .student-table th { background-color: var(--accent); }
@@ -1147,6 +1245,7 @@
             }
             .class-selection, .add-student-grid, .admin-controls-grid, .withdrawal-actions { grid-template-columns: 1fr; }
             .student-item { flex-direction: column; align-items: flex-start; gap: 15px; }
+            #teacher-status-list li { flex-direction: column; align-items: flex-start; gap: 10px;} /* [MODIFIKASI] Stack di mobile */
         }
 
     </style>
@@ -1190,6 +1289,19 @@
                     <label for="teacher-form-matkul">Mata Pelajaran</label>
                     <input type="text" id="teacher-form-matkul" required placeholder="cth: Teknik Menulis Cerpen">
                 </div>
+                
+                <!-- [BARU] Tambahan Semester -->
+                <div class="form-group">
+                    <label for="teacher-form-semester">Semester</label>
+                    <select id="teacher-form-semester" required>
+                        <option value="">-- Pilih Semester --</option>
+                        <option value="1">Semester 1</option>
+                        <option value="2">Semester 2</option>
+                        <option value="3">Semester 3</option>
+                    </select>
+                </div>
+                <!-- [AKHIR] Tambahan Semester -->
+
                 <div class="class-selection">
                     <button type="submit" class="btn" data-kelas="Kelas A"><i class="fas fa-users"></i> Mulai Presensi Kelas A</button>
                     <button type="submit" class="btn" data-kelas="Kelas B"><i class="fas fa-users"></i> Mulai Presensi Kelas B</button>
@@ -1348,16 +1460,24 @@
         <div id="admin-student-management-view" class="view container hidden">
             <button id="back-to-admin-dashboard-btn" class="btn btn-secondary" style="width:auto; margin-bottom: 25px;"><i class="fas fa-arrow-left"></i> Kembali ke Dasbor</button>
             <h2>Manajemen Data Siswa</h2>
-            <p>Lihat, tambah, edit, atau hapus data siswa per kelas.</p>
+            <p>Lihat, tambah, edit, atau hapus data siswa per kelas dan semester.</p> <!-- [MODIFIKASI] Teks -->
 
+            <!-- [MODIFIKASI] Kontrol diubah menjadi 6 tombol -->
             <div class="student-management-controls">
-                <button id="view-class-a-btn" class="btn" style="flex:1;">Lihat Kelas A</button>
-                <button id="view-class-b-btn" class="btn" style="flex:1;">Lihat Kelas B</button>
+                <div class="class-semester-grid">
+                    <button class="btn btn-sm" data-kelas="Kelas A" data-semester="1">Kelas A - S1</button>
+                    <button class="btn btn-sm" data-kelas="Kelas A" data-semester="2">Kelas A - S2</button>
+                    <button class="btn btn-sm" data-kelas="Kelas A" data-semester="3">Kelas A - S3</button>
+                    <button class="btn btn-sm" data-kelas="Kelas B" data-semester="1">Kelas B - S1</button>
+                    <button class="btn btn-sm" data-kelas="Kelas B" data-semester="2">Kelas B - S2</button>
+                    <button class="btn btn-sm" data-kelas="Kelas B" data-semester="3">Kelas B - S3</button>
+                </div>
             </div>
             
-            <h3 id="current-class-header" style="text-align:left; margin-top:20px;" data-current-class=""></h3>
+            <!-- [MODIFIKASI] Tambah data-current-semester -->
+            <h3 id="current-class-header" style="text-align:left; margin-top:20px;" data-current-class="" data-current-semester=""></h3>
             <div id="student-table-container">
-                <p class="placeholder-text">Pilih kelas untuk melihat atau mengelola daftar siswa.</p>
+                <p class="placeholder-text">Pilih kelas dan semester untuk melihat atau mengelola daftar siswa.</p>
             </div>
             
             <div id="add-student-forms" class="hidden">
@@ -1434,4 +1554,3 @@
 
 </body>
 </html>
-
